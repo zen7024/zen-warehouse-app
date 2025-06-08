@@ -5,7 +5,6 @@ from datetime import datetime
 import streamlit_authenticator as stauth
 import yaml
 from yaml import SafeLoader
-from streamlit_qrcode_scanner import qrcode_scanner as qr_scanner  # type: ignore
 
 # ページ設定
 st.set_page_config(
@@ -75,77 +74,152 @@ uploaded = st.file_uploader(
 
 # データ読み込み
 if uploaded:
-    if uploaded.name.endswith(".csv"):
-        df = pd.read_csv(uploaded)
-    else:
-        df = pd.read_excel(uploaded, engine="openpyxl")
+    try:
+        if uploaded.name.endswith(".csv"):
+            df = pd.read_csv(uploaded)
+        else:
+            df = pd.read_excel(uploaded, engine="openpyxl")
+        st.success(f"✅ ファイル '{uploaded.name}' を正常に読み込みました")
+        st.info(f"📊 データ形状: {df.shape[0]}行 × {df.shape[1]}列")
+    except Exception as e:
+        st.error(f"❌ ファイル読み込みエラー: {e}")
+        st.stop()
 else:
-    st.info("サンプルデータを表示中 …")
+    st.info("📋 サンプルデータを表示中...")
     df = pd.DataFrame(
         {
-            "商品ID": ["A01", "A02", "B01", "B02"],
-            "商品名": ["ペン", "ノート", "箱", "テープ"],
-            "在庫数": [23, 5, 12, 3],
-            "ロケーション": ["東京", "大阪", "東京", "大阪"],
+            "商品ID": ["A01", "A02", "B01", "B02", "C01"],
+            "商品名": ["ペン", "ノート", "箱", "テープ", "クリップ"],
+            "在庫数": [23, 5, 12, 3, 15],
+            "ロケーション": ["東京", "大阪", "東京", "大阪", "名古屋"],
             "更新日": [
                 "2025-06-01",
                 "2025-06-01",
                 "2025-06-02",
                 "2025-06-02",
+                "2025-06-03",
             ],
         }
     )
 
+# デバッグ情報表示
+with st.expander("🔍 デバッグ情報", expanded=False):
+    st.write("**データフレームの形状:**", df.shape)
+    st.write("**列名:**", list(df.columns))
+    st.write("**データ型:**", df.dtypes.to_dict())
+    st.write("**最初の5行:**")
+    st.dataframe(df.head())
+
+# データの列名チェックと修正
+required_columns = ["商品ID", "商品名", "在庫数", "ロケーション"]
+missing_columns = [col for col in required_columns if col not in df.columns]
+
+if missing_columns:
+    st.error(f"❌ 必要な列が見つかりません: {missing_columns}")
+    st.info("📝 必要な列: 商品ID, 商品名, 在庫数, ロケーション")
+    
+    # 利用可能な列を表示
+    st.write("**現在のデータの列:**")
+    for i, col in enumerate(df.columns, 1):
+        st.write(f"{i}. {col}")
+    st.stop()
+
 # 日付型変換
 if "更新日" in df.columns:
-    if pd.api.types.is_object_dtype(df["更新日"]):
-        df["更新日"] = pd.to_datetime(df["更新日"])
+    try:
+        if pd.api.types.is_object_dtype(df["更新日"]):
+            df["更新日"] = pd.to_datetime(df["更新日"])
+        st.success("✅ 更新日を日付型に変換しました")
+    except Exception as e:
+        st.warning(f"⚠️ 日付変換に失敗: {e}")
 
 # サイドバー設定
 low_stock_threshold = st.sidebar.number_input(
     "在庫不足判定しきい値", min_value=0, value=10
 )
 
-# KPI
-col1, col2, col3 = st.columns(3)
-col1.metric("総商品数", len(df))
-col2.metric("総在庫数", int(df["在庫数"].sum()))
-col3.metric("在庫不足品目", int((df["在庫数"] < low_stock_threshold).sum()))
+# KPI計算とデバッグ
+try:
+    total_products = len(df)
+    total_stock = int(df["在庫数"].sum())
+    low_stock_items = int((df["在庫数"] < low_stock_threshold).sum())
+    
+    # KPI表示
+    col1, col2, col3 = st.columns(3)
+    col1.metric("総商品数", total_products)
+    col2.metric("総在庫数", total_stock)
+    col3.metric("在庫不足品目", low_stock_items)
+    
+except Exception as e:
+    st.error(f"❌ KPI計算エラー: {e}")
+    st.write("デバッグ用データ:")
+    st.write(df)
 
 # ミニ在庫検索
 st.markdown("### 🔍 ミニ在庫検索")
 search_term = st.text_input("商品名またはIDで検索", "")
 
 if search_term:
-    result_df = df[df["商品名"].str.contains(search_term, case=False, na=False) |
-                   df["商品ID"].str.contains(search_term, case=False, na=False)]
-    if not result_df.empty:
-        st.dataframe(result_df, hide_index=True, height=250)
-    else:
-        st.info("該当する商品が見つかりませんでした。")
+    try:
+        result_df = df[
+            df["商品名"].str.contains(search_term, case=False, na=False) |
+            df["商品ID"].str.contains(search_term, case=False, na=False)
+        ]
+        if not result_df.empty:
+            st.success(f"🎯 {len(result_df)}件の商品が見つかりました")
+            st.dataframe(result_df, hide_index=True, height=250)
+        else:
+            st.info("該当する商品が見つかりませんでした。")
+    except Exception as e:
+        st.error(f"❌ 検索エラー: {e}")
 
 # フィルター
-locations = st.multiselect(
-    "ロケーションを選択",
-    options=sorted(df["ロケーション"].unique()),
-    default=list(df["ロケーション"].unique()),
-)
-
-df_filtered = df[df["ロケーション"].isin(locations)]
+try:
+    unique_locations = sorted(df["ロケーション"].unique())
+    locations = st.multiselect(
+        "ロケーションを選択",
+        options=unique_locations,
+        default=unique_locations,
+    )
+    
+    if locations:
+        df_filtered = df[df["ロケーション"].isin(locations)]
+        st.success(f"✅ {len(locations)}ヶ所のロケーションでフィルタリング")
+    else:
+        df_filtered = df
+        st.warning("⚠️ ロケーションが選択されていません。全データを表示します。")
+        
+except Exception as e:
+    st.error(f"❌ フィルター処理エラー: {e}")
+    df_filtered = df
 
 # 在庫一覧テーブル
-st.subheader("在庫一覧")
-st.dataframe(
-    df_filtered.style.apply(
-        lambda x: [
-            "background-color:#FFCDD2" if v < low_stock_threshold else ""
-            for v in x
-        ],
-        subset=["在庫数"],
-    ),
-    hide_index=True,
-    height=350,
-)
+st.subheader("📋 在庫一覧")
+try:
+    if not df_filtered.empty:
+        # スタイリング付きテーブル
+        styled_df = df_filtered.style.apply(
+            lambda x: [
+                "background-color:#FFCDD2" if v < low_stock_threshold else ""
+                for v in x
+            ],
+            subset=["在庫数"],
+        )
+        st.dataframe(styled_df, hide_index=True, height=350)
+        
+        # 統計情報
+        st.markdown("**📊 フィルター後の統計:**")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("表示商品数", len(df_filtered))
+        col2.metric("表示在庫総数", int(df_filtered["在庫数"].sum()))
+        col3.metric("在庫不足商品", int((df_filtered["在庫数"] < low_stock_threshold).sum()))
+    else:
+        st.warning("⚠️ 表示するデータがありません")
+        
+except Exception as e:
+    st.error(f"❌ テーブル表示エラー: {e}")
+    st.write("フィルター後のデータ:")
+    st.write(df_filtered)
 
 # 操作履歴用リスト初期化
 if "ops" not in st.session_state:
@@ -155,64 +229,138 @@ if "ops" not in st.session_state:
 st.session_state.ops.append({
     "time": datetime.now().isoformat(timespec="seconds"),
     "action": "データ読み込み",
-    "records": len(df)
+    "records": len(df),
+    "user": name
 })
 
 # 可視化タブ
-barcode_tab, inv_tab, trend_tab = st.tabs(["📷 バーコードスキャン", "ロケーション別在庫", "日別在庫推移"])
+try:
+    barcode_tab, inv_tab, trend_tab = st.tabs(["📷 バーコードスキャン", "ロケーション別在庫", "日別在庫推移"])
 
-with barcode_tab:
-    st.subheader("バーコード/QR 読み取り")
-    try:
-        code = qr_scanner("クリックしてカメラを起動")
-        if code:
-            st.success(f"読み取り結果: {code}")
-            st.session_state.ops.append({
-                "time": datetime.now().isoformat(timespec="seconds"),
-                "action": "スキャン",
-                "code": code,
-            })
-    except ModuleNotFoundError:
-        st.error("streamlit-qr-scanner がインストールされていません")
+    with barcode_tab:
+        st.subheader("📱 バーコード/QR 読み取り")
+        st.info("📡 この機能を使用するにはHTTPS環境が必要です")
+        
+        try:
+            from streamlit_qrcode_scanner import qrcode_scanner as qr_scanner
+            code = qr_scanner("クリックしてカメラを起動")
+            if code:
+                st.success(f"✅ 読み取り結果: {code}")
+                
+                # 読み取ったコードで商品を検索
+                search_result = df[
+                    df["商品ID"].str.contains(str(code), case=False, na=False) |
+                    df["商品名"].str.contains(str(code), case=False, na=False)
+                ]
+                
+                if not search_result.empty:
+                    st.subheader("🎯 該当商品")
+                    st.dataframe(search_result, hide_index=True)
+                else:
+                    st.warning("該当する商品が見つかりませんでした")
+                
+                # 履歴に記録
+                st.session_state.ops.append({
+                    "time": datetime.now().isoformat(timespec="seconds"),
+                    "action": "バーコードスキャン",
+                    "code": str(code),
+                    "result": len(search_result),
+                    "user": name
+                })
+        except ImportError:
+            st.error("📦 streamlit-qrcode-scanner がインストールされていません")
+            st.code("pip install streamlit-qrcode-scanner", language="bash")
+        except Exception as e:
+            st.error(f"❌ スキャナーエラー: {e}")
+        
+        # 手動入力オプション
+        st.markdown("---")
+        st.subheader("⌨️ 手動入力")
+        manual_code = st.text_input("商品IDまたはバーコードを入力", "")
+        if manual_code:
+            search_result = df[df["商品ID"].str.contains(manual_code, case=False, na=False)]
+            if not search_result.empty:
+                st.dataframe(search_result, hide_index=True)
+            else:
+                st.info("該当する商品が見つかりませんでした")
 
-with inv_tab:
-    fig_loc = px.bar(
-        df_filtered.groupby("ロケーション")["在庫数"].sum().reset_index(),
-        x="ロケーション",
-        y="在庫数",
-        title="ロケーション別 在庫総数",
-        color="在庫数",
-        color_continuous_scale="viridis",
-    )
-    st.plotly_chart(fig_loc, use_container_width=True)
+    with inv_tab:
+        if not df_filtered.empty:
+            location_summary = df_filtered.groupby("ロケーション")["在庫数"].sum().reset_index()
+            
+            if not location_summary.empty:
+                fig_loc = px.bar(
+                    location_summary,
+                    x="ロケーション",
+                    y="在庫数",
+                    title="ロケーション別 在庫総数",
+                    color="在庫数",
+                    color_continuous_scale="viridis",
+                )
+                fig_loc.update_layout(
+                    xaxis_title="ロケーション",
+                    yaxis_title="在庫数",
+                    showlegend=False
+                )
+                st.plotly_chart(fig_loc, use_container_width=True)
+                
+                # 詳細データ表示
+                st.markdown("**📊 ロケーション別詳細:**")
+                st.dataframe(location_summary, hide_index=True)
+            else:
+                st.warning("⚠️ グラフ表示用のデータがありません")
+        else:
+            st.warning("⚠️ 表示するデータがありません")
 
-with trend_tab:
-    if "更新日" in df_filtered.columns:
-        daily = (
-            df_filtered.groupby(["更新日"])["在庫数"].sum().reset_index().sort_values("更新日")
-        )
-        fig_day = px.line(
-            daily,
-            x="更新日",
-            y="在庫数",
-            markers=True,
-            title="日別 在庫推移",
-        )
-        st.plotly_chart(fig_day, use_container_width=True)
-    else:
-        st.info("📅『更新日』データがないため、日別在庫推移は表示できません。")
+    with trend_tab:
+        if "更新日" in df_filtered.columns and not df_filtered.empty:
+            try:
+                daily = (
+                    df_filtered.groupby(["更新日"])["在庫数"].sum().reset_index().sort_values("更新日")
+                )
+                
+                if not daily.empty:
+                    fig_day = px.line(
+                        daily,
+                        x="更新日",
+                        y="在庫数",
+                        markers=True,
+                        title="日別 在庫推移",
+                    )
+                    fig_day.update_layout(
+                        xaxis_title="更新日",
+                        yaxis_title="在庫数"
+                    )
+                    st.plotly_chart(fig_day, use_container_width=True)
+                    
+                    # 詳細データ表示
+                    st.markdown("**📊 日別詳細:**")
+                    st.dataframe(daily, hide_index=True)
+                else:
+                    st.warning("⚠️ 日別推移データがありません")
+            except Exception as e:
+                st.error(f"❌ 日別推移グラフエラー: {e}")
+        else:
+            st.info("📅 『更新日』データがないため、日別在庫推移は表示できません。")
+
+except Exception as e:
+    st.error(f"❌ タブ表示エラー: {e}")
 
 # 操作履歴ダウンロード
 with st.sidebar:
     st.markdown("### 📝 操作履歴")
-    if st.button("履歴をJSONでダウンロード"):
-        import json, base64
-        hist = json.dumps(st.session_state.ops, ensure_ascii=False, indent=2)
-        b64 = base64.b64encode(hist.encode()).decode()
-        href = f'<a href="data:application/json;base64,{b64}" download="ops_history.json">📥 ダウンロード</a>'
-        st.markdown(href, unsafe_allow_html=True)
+    if len(st.session_state.ops) > 0:
+        st.write(f"記録数: {len(st.session_state.ops)}")
+        if st.button("履歴をJSONでダウンロード"):
+            import json, base64
+            hist = json.dumps(st.session_state.ops, ensure_ascii=False, indent=2)
+            b64 = base64.b64encode(hist.encode()).decode()
+            href = f'<a href="data:application/json;base64,{b64}" download="ops_history.json">📥 ダウンロード</a>'
+            st.markdown(href, unsafe_allow_html=True)
+    else:
+        st.write("履歴なし")
 
 st.markdown("---")
 st.caption(
-    f"最終更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Powered by Streamlit"
+    f"最終更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Powered by Streamlit | ユーザー: {name}"
 )
