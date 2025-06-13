@@ -39,3 +39,14 @@ pip-delete-this-directory.txt
 *.backup
 *.bak
 app.py.broken
+
+# 環境変数ファイル
+.env
+.env.local
+.env.production
+
+# OpenAI設定ファイル
+config.py
+
+# その他の一時ファイル
+zen_ai.py.backup
