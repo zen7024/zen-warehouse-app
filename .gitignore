@@ -50,3 +50,5 @@ config.py
 
 # その他の一時ファイル
 zen_ai.py.backup
+
+data/*.db
