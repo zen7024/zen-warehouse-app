@@ -6,6 +6,13 @@ import streamlit_authenticator as stauth
 import yaml
 from yaml import SafeLoader
 
+try:
+    from streamlit_qrcode_scanner import qrcode_scanner
+    QR_SCANNER_AVAILABLE = True
+except Exception:
+    qrcode_scanner = None
+    QR_SCANNER_AVAILABLE = False
+
 # ページ設定
 st.set_page_config(
     page_title="倉庫分析アプリ📦",
@@ -319,17 +326,25 @@ barcode_tab, inv_tab, trend_tab = st.tabs(["📷 バーコードスキャン", "
 
 with barcode_tab:
     st.subheader("バーコード/QR 読み取り")
-    try:
-        code = qr_scanner("クリックしてカメラを起動")
-        if code:
-            st.success(f"読み取り結果: {code}")
-            st.session_state.ops.append({
-                "time": datetime.now().isoformat(timespec="seconds"),
-                "action": "スキャン",
-                "code": code,
-            })
-    except ModuleNotFoundError:
-        st.error("streamlit-qr-scanner がインストールされていません")
+
+    if not QR_SCANNER_AVAILABLE:
+        st.info("QRスキャナー機能は現在利用できません")
+    else:
+        try:
+            code = qrcode_scanner(key="warehouse_qr_scanner")
+
+            if code:
+                st.success(f"読み取り結果: {code}")
+                st.session_state.ops.append({
+                    "time": datetime.now().isoformat(timespec="seconds"),
+                    "action": "スキャン",
+                    "code": code,
+                })
+            else:
+                st.info("カメラを起動してQR/バーコードを読み取ってください")
+
+        except Exception as e:
+            st.error(f"QRスキャナーエラー: {e}")
 
 with inv_tab:
     # ロケーション別在庫グラフを表示（以前の tab1 処理を移動）
@@ -370,13 +385,3 @@ st.markdown("---")
 st.caption(
     f"最終更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Powered by Streamlit | ユーザー: {name}"
 )
-
-# QRスキャナー機能を一時的に無効化
-def qr_scanner(label):
-    st.info("QRスキャナー機能は現在開発中です")
-    return None
-
-if __name__ == "__main__":
-    # この行をコメントアウトまたは削除
-    # code = qr_scanner("クリックしてカメラを起動")
-    pass
