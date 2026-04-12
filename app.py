@@ -5,6 +5,7 @@ from datetime import datetime
 import streamlit_authenticator as stauth
 import yaml
 from yaml import SafeLoader
+from core.db import init_db, get_current_stock
 
 try:
     from streamlit_qrcode_scanner import qrcode_scanner
@@ -20,6 +21,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="auto"
 )
+
+init_db()
 
 st.title("📦 小さな倉庫分析アプリ")
 
