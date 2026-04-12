@@ -77,3 +77,72 @@ def get_current_stock():
         ORDER BY item_code, location_code
         """)
         return cur.fetchall()
+
+
+def insert_transaction(
+    tx_type,
+    item_code,
+    location_code,
+    qty,
+    lot_no=None,
+    order_no=None,
+    priority=None,
+    reason=None,
+    operator=None,
+    tx_time=None,
+    related_tx_id=None,
+):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+        INSERT INTO inventory_transactions (
+            tx_type,
+            item_code,
+            location_code,
+            qty,
+            lot_no,
+            order_no,
+            priority,
+            reason,
+            operator,
+            tx_time,
+            related_tx_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            tx_type,
+            item_code,
+            location_code,
+            qty,
+            lot_no,
+            order_no,
+            priority,
+            reason,
+            operator,
+            tx_time,
+            related_tx_id,
+        ))
+        conn.commit()
+
+
+def get_recent_transactions(limit=50):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT
+            tx_id,
+            tx_type,
+            item_code,
+            location_code,
+            qty,
+            lot_no,
+            order_no,
+            priority,
+            reason,
+            operator,
+            tx_time,
+            created_at
+        FROM inventory_transactions
+        ORDER BY tx_id DESC
+        LIMIT ?
+        """, (limit,))
+        return cur.fetchall()
