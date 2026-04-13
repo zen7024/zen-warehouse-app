@@ -174,6 +174,87 @@ def _fetch_current_stock_rows(cur):
     return cur.fetchall()
 
 
+def _build_allocatable_pool(cur, item_code, strategy="priority"):
+    """
+    指定商品のロケーション別引当可能プールを優先順付きで返す。
+
+    戻り値: [{"location_code": str, "qty": float, "priority": int|None}, ...]
+    """
+    cur.execute(
+        """
+        SELECT
+            location_code,
+            SUM(
+                CASE
+                    WHEN tx_type IN ('receipt', 'move_in', 'count_plus') THEN qty
+                    WHEN tx_type IN ('issue', 'move_out', 'count_minus') THEN -qty
+                    ELSE 0
+                END
+            ) AS stock_qty
+        FROM inventory_transactions
+        WHERE item_code = ?
+        GROUP BY location_code
+        HAVING stock_qty <> 0
+        """,
+        (item_code,),
+    )
+    stock_by_loc = {row["location_code"]: float(row["stock_qty"]) for row in cur.fetchall()}
+
+    cur.execute(
+        """
+        SELECT
+            ad.location_code,
+            COALESCE(SUM(ad.allocated_qty - ad.shipped_qty), 0) AS reserved
+        FROM allocation_details ad
+        JOIN order_lines ol ON ol.line_id = ad.line_id
+        WHERE ol.item_code = ?
+        GROUP BY ad.location_code
+        """,
+        (item_code,),
+    )
+    reserved_by_loc = {row["location_code"]: float(row["reserved"]) for row in cur.fetchall()}
+
+    pool = []
+    for loc, stock_qty in stock_by_loc.items():
+        allocatable = max(stock_qty - reserved_by_loc.get(loc, 0.0), 0.0)
+        if allocatable <= 0:
+            continue
+        pool.append({
+            "location_code": loc,
+            "qty": allocatable,
+            "priority": None,
+        })
+
+    if not pool:
+        return []
+
+    if strategy == "priority":
+        cur.execute(
+            """
+            SELECT location_code, MIN(priority) AS min_priority
+            FROM inventory_transactions
+            WHERE item_code = ? AND priority IS NOT NULL
+            GROUP BY location_code
+            """,
+            (item_code,),
+        )
+        priority_by_loc = {
+            row["location_code"]: int(row["min_priority"])
+            for row in cur.fetchall()
+            if row["min_priority"] is not None
+        }
+        for row in pool:
+            row["priority"] = priority_by_loc.get(row["location_code"])
+        pool.sort(key=lambda r: (r["priority"] is None, r["priority"] or 0, r["location_code"]))
+        return pool
+
+    if strategy == "location":
+        pool.sort(key=lambda r: r["location_code"])
+        return pool
+
+    raise ValueError(f"Unknown allocation strategy: {strategy}")
+
+
 def get_current_stock():
     with get_connection() as conn:
         cur = conn.cursor()
@@ -252,7 +333,7 @@ def get_recent_transactions(limit=50):
 def create_order_with_lines(reference, note, line_items):
     """
     line_items: (item_code, qty_required) のリスト（画面上の順で引当プールを消費）。
-    引当はロケーション別に allocation_details へ記録する（同一商品は location_code 昇順で消費＝最小 FIFO）。
+    引当はロケーション別に allocation_details へ記録する（strategy に基づく優先順で消費）。
 
     戻り値: (order_id, results)。有効行がなければ (None, [])。
     results の各要素に qty_pending に加え allocations: [{location_code, qty}, ...] を含む。
@@ -272,26 +353,7 @@ def create_order_with_lines(reference, note, line_items):
 
     with get_connection() as conn:
         cur = conn.cursor()
-
-        remaining = defaultdict(lambda: defaultdict(float))
-        for row in _fetch_current_stock_rows(cur):
-            d = dict(row)
-            remaining[d["item_code"]][d["location_code"]] += float(d["stock_qty"])
-
-        cur.execute("""
-        SELECT ol.item_code, ad.location_code,
-               COALESCE(SUM(ad.allocated_qty - ad.shipped_qty), 0) AS reserved
-        FROM allocation_details ad
-        JOIN order_lines ol ON ol.line_id = ad.line_id
-        GROUP BY ol.item_code, ad.location_code
-        """)
-        for r in cur.fetchall():
-            item_code = r["item_code"]
-            loc = r["location_code"]
-            res = float(r["reserved"])
-            remaining[item_code][loc] = remaining[item_code].get(loc, 0.0) - res
-            if remaining[item_code][loc] < 0:
-                remaining[item_code][loc] = 0.0
+        item_pools = {}
 
         cur.execute(
             "INSERT INTO orders (reference, note) VALUES (?, ?)",
@@ -301,18 +363,24 @@ def create_order_with_lines(reference, note, line_items):
         results = []
 
         for item_code, req in prepared:
+            if item_code not in item_pools:
+                item_pools[item_code] = _build_allocatable_pool(
+                    cur,
+                    item_code,
+                    strategy="priority",
+                )
             need = req
             details_to_insert = []
-            locs = sorted(remaining[item_code].keys())
-            for loc in locs:
+            for entry in item_pools[item_code]:
                 if need <= 0:
                     break
-                avail = max(0.0, remaining[item_code].get(loc, 0.0))
+                loc = entry["location_code"]
+                avail = max(0.0, float(entry["qty"]))
                 if avail <= 0:
                     continue
                 take = min(need, avail)
                 details_to_insert.append((loc, take))
-                remaining[item_code][loc] -= take
+                entry["qty"] = avail - take
                 need -= take
 
             alloc = req - need
