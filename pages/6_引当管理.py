@@ -77,7 +77,12 @@ with st.form("alloc_order_form"):
                     st.error("明細の登録に失敗しました")
                 else:
                     st.success(f"出荷指示を登録しました（order_id={order_id}）")
-                    df = pd.DataFrame(results)
+                    df = pd.DataFrame(
+                        [
+                            {k: v for k, v in r.items() if k != "allocations"}
+                            for r in results
+                        ]
+                    )
                     df = df.rename(
                         columns={
                             "item_code": "商品コード",
@@ -87,6 +92,22 @@ with st.form("alloc_order_form"):
                         }
                     )
                     st.dataframe(df, width="stretch")
+                    alloc_rows = []
+                    for r in results:
+                        for a in r.get("allocations") or []:
+                            alloc_rows.append(
+                                {
+                                    "商品コード": r["item_code"],
+                                    "ロケーション": a["location_code"],
+                                    "引当数量": a["qty"],
+                                }
+                            )
+                    if alloc_rows:
+                        st.caption("ロケーション別引当内訳（出荷確定時はこのロケーションから出庫されます）")
+                        st.dataframe(
+                            pd.DataFrame(alloc_rows),
+                            width="stretch",
+                        )
                     st.rerun()
 
 st.divider()
