@@ -75,14 +75,38 @@ else:
     st.info("この指示にはロケーション別引当明細がありません（登録当時の旧形式の可能性）。出庫は __SHIP__ に集約されます。")
 
 has_unshipped = any(float(dict(row)["qty_unshipped"]) > 0 for row in rows)
+line_ship_qty_map = {}
+
+if has_unshipped:
+    st.subheader("今回出荷数量")
+    st.caption("各明細の未出荷数量を上限に、今回出荷する数量を指定してください。")
+    for row in rows:
+        d = dict(row)
+        line_id = int(d["line_id"])
+        qty_unshipped = float(d["qty_unshipped"])
+        if qty_unshipped <= 0:
+            continue
+        line_ship_qty_map[line_id] = st.number_input(
+            f"明細 {line_id} / 商品 {d['item_code']}（未出荷 {qty_unshipped:g}）",
+            min_value=0.0,
+            max_value=qty_unshipped,
+            value=qty_unshipped,
+            step=1.0,
+            key=f"ship_qty_{line_id}",
+        )
 
 st.divider()
 operator = st.text_input("作業者", placeholder="任意")
 reason = st.text_input("備考（出庫トランザクションの理由に含まれます）", value="出荷確定")
 
 if st.button("出荷確定を実行", disabled=not has_unshipped, type="primary"):
+    total_ship_qty = sum(float(v) for v in line_ship_qty_map.values())
+    if total_ship_qty <= 0:
+        st.error("今回出荷数量がすべて0です。1明細以上に数量を指定してください。")
+        st.stop()
     ok, msg, _ = confirm_shipment_for_order(
         order_id,
+        line_ship_qty_map=line_ship_qty_map,
         operator=operator.strip() or None,
         reason=reason.strip() or None,
     )

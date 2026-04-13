@@ -440,13 +440,17 @@ def get_allocation_details_for_order(order_id):
         return cur.fetchall()
 
 
-def confirm_shipment_for_order(order_id, operator=None, reason=None):
+def confirm_shipment_for_order(order_id, line_ship_qty_map=None, operator=None, reason=None):
     """
-    未出荷分を inventory_transactions に issue として記録し、
+    指定数量（明細ごと）を inventory_transactions に issue として記録し、
     order_lines / allocation_details の shipped_qty を進める。
 
     allocation_details がある明細はロケーション別に issue。
     明細が無い旧データのみ SHIP_ISSUE_LOCATION へ集約 issue（後方互換）。
+
+    line_ship_qty_map: {line_id: 今回出荷数量}
+      - 未指定/None の場合は各明細の未出荷分を全量出荷（従来互換）
+      - 指定時は 0 超かつ未出荷以下の数量のみ反映
 
     戻り値: (成功, メッセージ, 処理した行の要約リスト)
     """
@@ -472,6 +476,18 @@ def confirm_shipment_for_order(order_id, operator=None, reason=None):
         if not pending:
             return False, "未出荷の引当がありません（すべて出荷済みか、引当ゼロです）", []
 
+        plan_map = {}
+        if line_ship_qty_map:
+            for k, v in line_ship_qty_map.items():
+                try:
+                    lid = int(k)
+                    q = float(v)
+                except (TypeError, ValueError):
+                    return False, f"今回出荷数量の形式が不正です（line_id={k}）", []
+                if q < 0:
+                    return False, f"今回出荷数量は0以上で指定してください（line_id={lid}）", []
+                plan_map[lid] = q
+
         base_reason = reason or "出荷確定"
         for line in pending:
             line_id = line["line_id"]
@@ -481,6 +497,17 @@ def confirm_shipment_for_order(order_id, operator=None, reason=None):
             to_ship_line = qty_alloc - shipped_line
             if to_ship_line <= 0:
                 continue
+            requested = to_ship_line
+            if line_ship_qty_map is not None:
+                requested = float(plan_map.get(line_id, 0.0))
+                if requested <= 0:
+                    continue
+                if requested > to_ship_line + 1e-6:
+                    return (
+                        False,
+                        f"明細 {line_id} の今回出荷数量が未出荷数量を超えています",
+                        [],
+                    )
 
             line_reason_base = f"{base_reason} (order_id={order_id}, line_id={line_id})"
 
@@ -493,12 +520,18 @@ def confirm_shipment_for_order(order_id, operator=None, reason=None):
             details = cur.fetchall()
 
             if details:
+                remain_req = requested
                 for det in details:
+                    if remain_req <= 1e-9:
+                        break
                     det_id = det["detail_id"]
                     loc = det["location_code"]
                     a = float(det["allocated_qty"])
                     s = float(det["shipped_qty"])
-                    to_ship = a - s
+                    unshipped = a - s
+                    if unshipped <= 0:
+                        continue
+                    to_ship = min(remain_req, unshipped)
                     if to_ship <= 0:
                         continue
                     cur.execute("""
@@ -530,17 +563,26 @@ def confirm_shipment_for_order(order_id, operator=None, reason=None):
                     ))
                     cur.execute(
                         "UPDATE allocation_details SET shipped_qty = ? WHERE detail_id = ?",
-                        (a, det_id),
+                        (s + to_ship, det_id),
                     )
+                    remain_req -= to_ship
                     summary.append({
                         "line_id": line_id,
                         "item_code": item_code,
                         "location_code": loc,
                         "qty_shipped": to_ship,
                     })
+                if remain_req > 1e-6:
+                    conn.rollback()
+                    return (
+                        False,
+                        f"明細 {line_id} のロケーション別未出荷が不足しているため出荷を中止しました",
+                        [],
+                    )
+
                 cur.execute(
                     "UPDATE order_lines SET shipped_qty = ? WHERE line_id = ?",
-                    (qty_alloc, line_id),
+                    (shipped_line + requested, line_id),
                 )
             else:
                 cur.execute("""
@@ -561,7 +603,7 @@ def confirm_shipment_for_order(order_id, operator=None, reason=None):
                     "issue",
                     item_code,
                     SHIP_ISSUE_LOCATION,
-                    to_ship_line,
+                    requested,
                     None,
                     order_ref,
                     None,
@@ -572,13 +614,13 @@ def confirm_shipment_for_order(order_id, operator=None, reason=None):
                 ))
                 cur.execute(
                     "UPDATE order_lines SET shipped_qty = ? WHERE line_id = ?",
-                    (qty_alloc, line_id),
+                    (shipped_line + requested, line_id),
                 )
                 summary.append({
                     "line_id": line_id,
                     "item_code": item_code,
                     "location_code": SHIP_ISSUE_LOCATION,
-                    "qty_shipped": to_ship_line,
+                    "qty_shipped": requested,
                 })
 
         conn.commit()
