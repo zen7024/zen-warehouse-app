@@ -118,6 +118,11 @@ def get_physical_stock_by_item():
     return _physical_stock_by_item()
 
 
+def get_allocation_strategy():
+    # 現在は共通基盤の既定戦略として priority 固定（将来差し替え用の窓口）
+    return "priority"
+
+
 def get_allocated_qty_by_item():
     """order_lines の未出荷引当合計（qty_allocated - shipped_qty）を商品コード別に集計。"""
     with get_connection() as conn:
@@ -354,6 +359,7 @@ def create_order_with_lines(reference, note, line_items):
     with get_connection() as conn:
         cur = conn.cursor()
         item_pools = {}
+        strategy = get_allocation_strategy()
 
         cur.execute(
             "INSERT INTO orders (reference, note) VALUES (?, ?)",
@@ -367,7 +373,7 @@ def create_order_with_lines(reference, note, line_items):
                 item_pools[item_code] = _build_allocatable_pool(
                     cur,
                     item_code,
-                    strategy="priority",
+                    strategy=strategy,
                 )
             need = req
             details_to_insert = []

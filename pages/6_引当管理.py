@@ -5,6 +5,7 @@ from core.db import (
     create_order_with_lines,
     get_recent_order_lines,
     get_physical_stock_by_item,
+    get_allocation_strategy,
 )
 
 init_db()
@@ -13,6 +14,7 @@ st.title("📌 引当管理（最小版）")
 st.write(
     "出荷指示を1件登録し、商品ごとに現在庫と比較して引当数量・未引当を記録します。"
 )
+st.caption(f"現在の引当戦略: {get_allocation_strategy()}")
 
 with st.expander("現在庫サマリ（商品コード合計）", expanded=False):
     phys = get_physical_stock_by_item()
