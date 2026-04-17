@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from collections import defaultdict
 from datetime import datetime
@@ -8,6 +9,41 @@ DB_PATH = BASE_DIR / "data" / "warehouse.db"
 
 # 引当明細が無い旧データ向けの出庫ロケーション（新規引当は allocation_details で実ロケーションへ記録）
 SHIP_ISSUE_LOCATION = "__SHIP__"
+DEFAULT_WAREHOUSE_CODE = "WH-001"
+
+STATE_LABELS = {
+    "UNALLOCATED": "未引当",
+    "PARTIAL_ALLOCATED": "一部引当",
+    "ALLOCATED": "引当済",
+    "REALLOC_PENDING": "再引当待ち",
+    "RELEASED": "解除済",
+    "WORKING": "作業中",
+    "PARTIAL_SHIPPED": "一部出荷",
+    "SHIPPED": "出荷確定",
+    "HOLD": "保留",
+    "SENT_BACK": "差戻し",
+    "CANCELLED": "キャンセル",
+}
+
+REASON_LABELS = {
+    "SHORTAGE": "現物不足",
+    "RELOCATION": "別ロケ再配分",
+    "CUSTOMER_CHANGE": "客先変更",
+    "PRIORITY_CHANGE": "優先変更",
+    "DELAYED_RECEIPT": "入荷遅延",
+    "FIFO_EXCEPTION": "FIFO例外",
+    "COUNT_DIFF": "棚卸差異",
+    "MANUAL_HOLD": "手動保留",
+    "INTERRUPT": "割り込み中断",
+    "OTHER": "その他",
+}
+
+APPROVAL_LABELS = {
+    "NOT_REQUIRED": "承認不要",
+    "WAITING": "承認待ち",
+    "APPROVED": "承認済",
+    "REJECTED": "却下",
+}
 
 
 def get_connection():
@@ -101,6 +137,46 @@ def init_db():
             cur.execute(
                 "ALTER TABLE order_lines ADD COLUMN shipped_qty REAL NOT NULL DEFAULT 0"
             )
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS order_state_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER,
+            line_id INTEGER,
+            state_code TEXT NOT NULL,
+            state_reason TEXT,
+            hold_flag INTEGER DEFAULT 0,
+            hold_reason TEXT,
+            approval_required INTEGER DEFAULT 0,
+            approval_status TEXT DEFAULT 'NOT_REQUIRED',
+            impact_order_count INTEGER DEFAULT 0,
+            changed_by TEXT,
+            changed_at TEXT NOT NULL,
+            free_note TEXT,
+            FOREIGN KEY (order_id) REFERENCES orders(order_id),
+            FOREIGN KEY (line_id) REFERENCES order_lines(line_id)
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            event_at TEXT NOT NULL,
+            user_id TEXT,
+            role_name TEXT,
+            warehouse_code TEXT,
+            order_id INTEGER,
+            order_no TEXT,
+            line_id INTEGER,
+            item_code TEXT,
+            location_code TEXT,
+            before_value TEXT,
+            after_value TEXT,
+            reason_code TEXT,
+            free_note TEXT
+        )
+        """)
 
         conn.commit()
 
@@ -820,3 +896,423 @@ def release_allocation_for_line(line_id, release_qty):
         conn.commit()
 
     return True, f"引当を {total_cut:g} 解除しました（商品 {line['item_code']}）"
+
+
+def _row_to_dict(row):
+    return dict(row) if row is not None else None
+
+
+def _json_dump(value):
+    return json.dumps(value, ensure_ascii=False) if value is not None else None
+
+
+def get_reason_options():
+    return REASON_LABELS.copy()
+
+
+def get_state_label(state_code):
+    return STATE_LABELS.get(state_code, state_code or "-")
+
+
+def get_approval_label(status_code):
+    return APPROVAL_LABELS.get(status_code, status_code or "-")
+
+
+def log_audit_event(
+    event_type,
+    user_id=None,
+    role_name=None,
+    warehouse_code=DEFAULT_WAREHOUSE_CODE,
+    order_id=None,
+    order_no=None,
+    line_id=None,
+    item_code=None,
+    location_code=None,
+    before_value=None,
+    after_value=None,
+    reason_code=None,
+    free_note=None,
+):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO audit_logs (
+                event_type,
+                event_at,
+                user_id,
+                role_name,
+                warehouse_code,
+                order_id,
+                order_no,
+                line_id,
+                item_code,
+                location_code,
+                before_value,
+                after_value,
+                reason_code,
+                free_note
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_type,
+                datetime.now().isoformat(timespec="seconds"),
+                user_id,
+                role_name,
+                warehouse_code,
+                order_id,
+                order_no,
+                line_id,
+                item_code,
+                location_code,
+                _json_dump(before_value),
+                _json_dump(after_value),
+                reason_code,
+                free_note,
+            ),
+        )
+        conn.commit()
+
+
+def infer_line_state(qty_required, qty_allocated, shipped_qty):
+    req = float(qty_required or 0)
+    alloc = float(qty_allocated or 0)
+    shipped = float(shipped_qty or 0)
+
+    if shipped >= req and req > 0:
+        return "SHIPPED"
+    if shipped > 0:
+        return "PARTIAL_SHIPPED"
+    if alloc >= req and req > 0:
+        return "ALLOCATED"
+    if alloc > 0:
+        return "PARTIAL_ALLOCATED"
+    return "UNALLOCATED"
+
+
+def get_latest_line_state_map(order_id=None):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        params = []
+        where = "WHERE line_id IS NOT NULL"
+        if order_id is not None:
+            where += " AND order_id = ?"
+            params.append(order_id)
+
+        cur.execute(
+            f"""
+            SELECT s.*
+            FROM order_state_logs s
+            INNER JOIN (
+                SELECT line_id, MAX(id) AS max_id
+                FROM order_state_logs
+                {where}
+                GROUP BY line_id
+            ) latest
+              ON latest.max_id = s.id
+            ORDER BY s.line_id
+            """,
+            params,
+        )
+        rows = cur.fetchall()
+        return {int(r["line_id"]): dict(r) for r in rows}
+
+
+def get_line_impact_order_counts(order_id):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT l1.line_id, COUNT(DISTINCT l2.order_id) AS impact_order_count
+            FROM order_lines l1
+            LEFT JOIN order_lines l2
+              ON l1.item_code = l2.item_code
+             AND l1.order_id <> l2.order_id
+             AND l2.qty_allocated > l2.shipped_qty
+            WHERE l1.order_id = ?
+            GROUP BY l1.line_id
+            """,
+            (order_id,),
+        )
+        return {int(r["line_id"]): int(r["impact_order_count"] or 0) for r in cur.fetchall()}
+
+
+def save_line_state(
+    line_id,
+    state_code,
+    state_reason=None,
+    hold_flag=False,
+    hold_reason=None,
+    approval_required=False,
+    approval_status="NOT_REQUIRED",
+    impact_order_count=0,
+    changed_by=None,
+    free_note=None,
+):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT l.line_id, l.order_id, o.reference, l.item_code,
+                   l.qty_required, l.qty_allocated, l.shipped_qty
+            FROM order_lines l
+            JOIN orders o ON o.order_id = l.order_id
+            WHERE l.line_id = ?
+            """,
+            (line_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return False, "明細が見つかりません"
+
+        before_state = {
+            "inferred_state": infer_line_state(
+                row["qty_required"], row["qty_allocated"], row["shipped_qty"]
+            )
+        }
+        after_state = {
+            "state_code": state_code,
+            "state_reason": state_reason,
+            "hold_flag": int(bool(hold_flag)),
+            "hold_reason": hold_reason,
+            "approval_required": int(bool(approval_required)),
+            "approval_status": approval_status,
+            "impact_order_count": int(impact_order_count or 0),
+            "changed_by": changed_by,
+        }
+
+        changed_at = datetime.now().isoformat(timespec="seconds")
+        cur.execute(
+            """
+            INSERT INTO order_state_logs (
+                order_id,
+                line_id,
+                state_code,
+                state_reason,
+                hold_flag,
+                hold_reason,
+                approval_required,
+                approval_status,
+                impact_order_count,
+                changed_by,
+                changed_at,
+                free_note
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row["order_id"],
+                row["line_id"],
+                state_code,
+                state_reason,
+                int(bool(hold_flag)),
+                hold_reason,
+                int(bool(approval_required)),
+                approval_status,
+                int(impact_order_count or 0),
+                changed_by,
+                changed_at,
+                free_note,
+            ),
+        )
+        conn.commit()
+
+    log_audit_event(
+        event_type="STATE_CHANGE",
+        user_id=changed_by,
+        order_id=row["order_id"],
+        order_no=row["reference"],
+        line_id=row["line_id"],
+        item_code=row["item_code"],
+        before_value=before_state,
+        after_value=after_state,
+        reason_code=state_reason,
+        free_note=free_note,
+    )
+    return True, "状態を保存しました"
+
+
+def get_current_stock_breakdown():
+    stock_rows = [dict(r) for r in get_current_stock()]
+    with get_connection() as conn:
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT
+                ol.item_code,
+                ad.location_code,
+                COALESCE(SUM(ad.allocated_qty - ad.shipped_qty), 0) AS reserved_qty
+            FROM allocation_details ad
+            JOIN order_lines ol ON ol.line_id = ad.line_id
+            GROUP BY ol.item_code, ad.location_code
+            """
+        )
+        reserved_map = {
+            (r["item_code"], r["location_code"]): float(r["reserved_qty"])
+            for r in cur.fetchall()
+        }
+
+        cur.execute(
+            """
+            SELECT t1.item_code, t1.location_code, t1.operator, t1.tx_time, t1.tx_type
+            FROM inventory_transactions t1
+            INNER JOIN (
+                SELECT item_code, location_code, MAX(tx_id) AS max_tx_id
+                FROM inventory_transactions
+                GROUP BY item_code, location_code
+            ) t2 ON t2.max_tx_id = t1.tx_id
+            """
+        )
+        latest_tx_map = {
+            (r["item_code"], r["location_code"]): dict(r)
+            for r in cur.fetchall()
+        }
+
+    result = []
+    for row in stock_rows:
+        item_code = row["item_code"]
+        location_code = row["location_code"]
+        total_qty = float(row["stock_qty"])
+        allocated_qty = float(reserved_map.get((item_code, location_code), 0.0))
+        latest_tx = latest_tx_map.get((item_code, location_code), {})
+        tx_type = latest_tx.get("tx_type")
+
+        result.append(
+            {
+                "item_code": item_code,
+                "location_code": location_code,
+                "total_qty": total_qty,
+                "allocated_qty": allocated_qty,
+                "allocatable_qty": max(total_qty - allocated_qty, 0.0),
+                "hold_qty": 0.0,
+                "diff_flag": 1 if tx_type in ("count_plus", "count_minus") else 0,
+                "exception_flag": 1 if allocated_qty > total_qty else 0,
+                "location_type": "通常",
+                "warehouse_code": DEFAULT_WAREHOUSE_CODE,
+                "changed_by": latest_tx.get("operator"),
+                "changed_at": latest_tx.get("tx_time"),
+            }
+        )
+    return result
+
+
+def get_allocatable_stock_by_item_enhanced():
+    base_rows = get_allocatable_stock_by_item()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT item_code, COUNT(DISTINCT order_id) AS inuse_order_count
+            FROM order_lines
+            WHERE qty_allocated > shipped_qty
+            GROUP BY item_code
+            """
+        )
+        inuse_map = {r["item_code"]: int(r["inuse_order_count"]) for r in cur.fetchall()}
+
+    result = []
+    for row in base_rows:
+        item_code = row["item_code"]
+        result.append(
+            {
+                **row,
+                "hold_qty": 0.0,
+                "inuse_order_count": int(inuse_map.get(item_code, 0)),
+                "priority_reserved_qty": 0.0,
+                "inbound_planned_qty": 0.0,
+                "warehouse_code": DEFAULT_WAREHOUSE_CODE,
+            }
+        )
+    return result
+
+
+def get_enhanced_order_lines(order_id):
+    line_rows = [dict(r) for r in get_order_lines_shipment_view(order_id)]
+    state_map = get_latest_line_state_map(order_id)
+    impact_map = get_line_impact_order_counts(order_id)
+
+    result = []
+    for row in line_rows:
+        line_id = int(row["line_id"])
+        state_row = state_map.get(line_id, {})
+        inferred_state = infer_line_state(
+            row["qty_required"], row["qty_allocated"], row["shipped_qty"]
+        )
+        state_code = state_row.get("state_code") or inferred_state
+        approval_status = state_row.get("approval_status") or "NOT_REQUIRED"
+        item = {
+            **row,
+            "state_code": state_code,
+            "state_label": get_state_label(state_code),
+            "state_reason": state_row.get("state_reason"),
+            "hold_flag": int(state_row.get("hold_flag") or 0),
+            "hold_reason": state_row.get("hold_reason"),
+            "approval_required": int(state_row.get("approval_required") or 0),
+            "approval_status": approval_status,
+            "approval_label": get_approval_label(approval_status),
+            "impact_order_count": int(state_row.get("impact_order_count") or impact_map.get(line_id, 0)),
+            "changed_by": state_row.get("changed_by"),
+            "changed_at": state_row.get("changed_at"),
+        }
+        result.append(item)
+    return result
+
+
+def get_shipment_blockers(order_id, line_ship_qty_map, reason_code=None):
+    blockers = []
+    line_rows = get_enhanced_order_lines(order_id)
+    line_map = {int(r["line_id"]): r for r in line_rows}
+
+    # 状態ベースの停止条件
+    for line_id, row in line_map.items():
+        requested = float(line_ship_qty_map.get(line_id, 0.0) or 0.0)
+        if requested <= 0:
+            continue
+        if int(row.get("hold_flag") or 0) == 1:
+            blockers.append(f"明細 {line_id}: 保留中のため出荷確定できません")
+        if int(row.get("approval_required") or 0) == 1 and row.get("approval_status") != "APPROVED":
+            blockers.append(f"明細 {line_id}: 承認待ちのため出荷確定できません")
+
+    # ロケーション現在庫ベースの不足チェック
+    current_stock_map = {
+        (r["item_code"], r["location_code"]): float(r["stock_qty"])
+        for r in get_current_stock()
+    }
+    ad_rows = [dict(r) for r in get_allocation_details_for_order(order_id)]
+    grouped = {}
+    for row in ad_rows:
+        grouped.setdefault(int(row["line_id"]), []).append(row)
+
+    consumed_map = defaultdict(float)
+    for line_id, details in grouped.items():
+        requested = float(line_ship_qty_map.get(line_id, 0.0) or 0.0)
+        if requested <= 0:
+            continue
+        remain = requested
+        for det in details:
+            if remain <= 1e-9:
+                break
+            key = (det["item_code"], det["location_code"])
+            now_stock = float(current_stock_map.get(key, 0.0)) - float(consumed_map.get(key, 0.0))
+            detail_unshipped = float(det["qty_unshipped"])
+            to_ship = min(remain, detail_unshipped)
+            if to_ship > now_stock + 1e-9:
+                blockers.append(
+                    f"明細 {line_id}: ロケーション {det['location_code']} の現在庫不足です（必要 {to_ship:g} / 現在庫 {max(now_stock, 0):g}）"
+                )
+            consumed_map[key] += max(min(to_ship, now_stock), 0.0)
+            remain -= to_ship
+
+    if any(float(v or 0.0) > 0 for v in line_ship_qty_map.values()) and not reason_code:
+        blockers.append("出荷理由コードを選択してください")
+
+    return blockers
+
+
+def get_release_blockers(line_id, reason_code=None, approval_required=False, approval_status="NOT_REQUIRED"):
+    blockers = []
+    if not reason_code:
+        blockers.append("解除理由コードを選択してください")
+    if approval_required and approval_status != "APPROVED":
+        blockers.append("承認待ちのため解除できません")
+    return blockers
