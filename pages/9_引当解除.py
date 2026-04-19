@@ -13,9 +13,31 @@ from core.db import (
     get_state_label,
     save_line_state,
     log_audit_event,
+    get_order_competition_by_item,
+    build_alloc_status,
 )
 
 init_db()
+
+
+def _competition_display_rows(rows):
+    out = []
+    for r in rows:
+        ref = (r.get("reference") or "").strip() or "(番号なし)"
+        out.append(
+            {
+                "出荷指示番号": ref,
+                "明細ID": int(r["line_id"]),
+                "必要数": float(r["qty_required"]),
+                "引当済": float(r["qty_allocated"]),
+                "出荷済": float(r["shipped_qty"]),
+                "未引当": float(r["qty_pending"]),
+                "未出荷引当": float(r["qty_unshipped"]),
+                "引当状態": r.get("alloc_status")
+                or build_alloc_status(r["qty_required"], r["qty_allocated"]),
+            }
+        )
+    return out
 
 
 def _next_state_after_release_from_line(line: dict) -> str:
@@ -44,6 +66,7 @@ def _finalize_release_and_audit(
     operator: Optional[str],
     free_note_state: str,
     free_note_audit: str,
+    release_memo: Optional[str] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
     解除成功後: 最新明細で状態を判定し save_line_state / RELEASE 監査を行う。
@@ -69,6 +92,8 @@ def _finalize_release_and_audit(
         changed_by=operator.strip() or None,
         free_note=free_note_state,
     )
+    memo = (release_memo or "").strip()
+    audit_note = free_note_audit if not memo else f"{free_note_audit} | {memo}"
     log_audit_event(
         event_type="RELEASE",
         user_id=operator.strip() or None,
@@ -87,7 +112,7 @@ def _finalize_release_and_audit(
             "next_state": next_state,
         },
         reason_code=reason_code or None,
-        free_note=free_note_audit,
+        free_note=audit_note,
     )
     return True, None
 
@@ -166,6 +191,20 @@ for row in rows:
     any_releasable = True
 
     st.markdown(f"**明細 ID {lid}** ・ {item}")
+    release_memo = st.text_input(
+        "解除理由（メモ・任意）",
+        value="",
+        placeholder="例: 優先変更のため一時解放、他案件への振り向け など",
+        key=f"release_memo_{lid}",
+    )
+    with st.expander("同一商品の案件競合一覧", expanded=False):
+        st.caption("同一商品の他出荷指示との取り合いを確認できます。")
+        comp = get_order_competition_by_item(item)
+        disp = _competition_display_rows(comp)
+        if not disp:
+            st.info("この商品コードの出荷明細はまだありません。")
+        else:
+            st.dataframe(pd.DataFrame(disp), width="stretch")
     c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.0, 1.0])
     with c1:
         qty_in = st.number_input(
@@ -218,6 +257,7 @@ for row in rows:
                         operator=operator,
                         free_note_state="引当解除（指定数量）",
                         free_note_audit="指定数量解除",
+                        release_memo=release_memo,
                     )
                     if not fin_ok:
                         st.error(fin_err or "解除後処理に失敗しました")
@@ -251,6 +291,7 @@ for row in rows:
                         operator=operator,
                         free_note_state="引当解除（全解除）",
                         free_note_audit="全解除",
+                        release_memo=release_memo,
                     )
                     if not fin_ok:
                         st.error(fin_err or "解除後処理に失敗しました")

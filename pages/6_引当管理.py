@@ -15,6 +15,8 @@ from core.db import (
     save_line_state,
     reallocate_shortage_for_line,
     log_audit_event,
+    build_alloc_status,
+    get_order_competition_by_item,
 )
 
 init_db()
@@ -60,6 +62,28 @@ def parse_detail_lines(text: str):
     return result, None
 
 
+def _competition_display_rows(rows):
+    """get_order_competition_by_item の行を画面用の dict リストに整形する。"""
+    out = []
+    for r in rows:
+        ref = (r.get("reference") or "").strip() or "(番号なし)"
+        out.append(
+            {
+                "出荷指示番号": ref,
+                "明細ID": int(r["line_id"]),
+                "必要数": float(r["qty_required"]),
+                "引当済": float(r["qty_allocated"]),
+                "出荷済": float(r["shipped_qty"]),
+                "未引当": float(r["qty_pending"]),
+                "未出荷引当": float(r["qty_unshipped"]),
+                "引当状態": r.get("alloc_status") or build_alloc_status(
+                    r["qty_required"], r["qty_allocated"]
+                ),
+            }
+        )
+    return out
+
+
 def show_state_save_result(ok: bool, msg: str):
     if not ok:
         st.error(msg)
@@ -88,6 +112,10 @@ def render_order_state_section(order_id: int, title: str, key_prefix: str, opera
         df_latest["state_code"] = df_latest["state_code"].map(get_state_label)
     if "approval_status" in df_latest.columns:
         df_latest["approval_status"] = df_latest["approval_status"].map(get_approval_label)
+    df_latest["引当状態"] = df_latest.apply(
+        lambda r: build_alloc_status(r["qty_required"], r["qty_allocated"]),
+        axis=1,
+    )
     df_latest = df_latest.rename(
         columns={
             "line_id": "明細ID",
@@ -107,7 +135,7 @@ def render_order_state_section(order_id: int, title: str, key_prefix: str, opera
         }
     )
     show_cols = [
-        "明細ID", "商品コード", "必要数", "引当済数量", "未出荷数量",
+        "明細ID", "商品コード", "必要数", "引当済数量", "未出荷数量", "引当状態",
         "状態", "状態理由", "影響案件数", "承認要否", "承認状態",
         "更新者", "更新日時"
     ]
@@ -259,9 +287,43 @@ with st.form("alloc_order_form"):
                     )
                     st.success(f"出荷指示を登録しました（order_id={order_id}）")
                     st.session_state["last_alloc_order_id"] = order_id
+                    st.session_state["last_alloc_item_codes"] = sorted(
+                        {r["item_code"] for r in results}
+                    )
+                    st.session_state["last_alloc_register_snapshot"] = [
+                        dict(r) for r in results
+                    ]
                     st.rerun()
 
 st.divider()
+snap = st.session_state.get("last_alloc_register_snapshot")
+if snap:
+    st.subheader("直近登録の引当結果（数量）")
+    snap_rows = []
+    for r in snap:
+        snap_rows.append(
+            {
+                "商品コード": r["item_code"],
+                "必要数": float(r["qty_required"]),
+                "引当済": float(r["qty_allocated"]),
+                "未引当": float(r["qty_pending"]),
+                "引当状態": build_alloc_status(r["qty_required"], r["qty_allocated"]),
+            }
+        )
+    st.dataframe(pd.DataFrame(snap_rows), width="stretch")
+    codes = st.session_state.get("last_alloc_item_codes") or []
+    if codes:
+        with st.expander("同一商品の案件競合一覧（直近登録に含まれる商品）", expanded=False):
+            st.caption("同一商品について、他案件を含む全明細の引当状況です。")
+            for ic in codes:
+                st.markdown(f"**商品: {ic}**")
+                comp = get_order_competition_by_item(ic)
+                disp = _competition_display_rows(comp)
+                if not disp:
+                    st.info("該当する出荷明細がありません。")
+                else:
+                    st.dataframe(pd.DataFrame(disp), width="stretch")
+
 st.subheader("既存出荷指示の状態更新")
 order_rows = list_orders_for_ship_confirm()
 if order_rows:
@@ -386,6 +448,10 @@ st.subheader("最近の引当明細")
 rows = get_recent_order_lines(limit=40)
 if rows:
     df_hist = pd.DataFrame([dict(row) for row in rows])
+    df_hist["引当状態"] = df_hist.apply(
+        lambda r: build_alloc_status(r["qty_required"], r["qty_allocated"]),
+        axis=1,
+    )
     df_hist = df_hist.rename(
         columns={
             "order_id": "指示ID",
@@ -395,9 +461,24 @@ if rows:
             "item_code": "商品コード",
             "qty_required": "必要数",
             "qty_allocated": "引当済数量",
+            "shipped_qty": "出荷済数量",
             "qty_pending": "未引当",
+            "qty_unshipped": "未出荷引当",
         }
     )
-    st.dataframe(df_hist, width="stretch")
+    hist_cols = [
+        "指示ID",
+        "出荷指示番号",
+        "登録日時",
+        "明細ID",
+        "商品コード",
+        "必要数",
+        "引当済数量",
+        "出荷済数量",
+        "未引当",
+        "未出荷引当",
+        "引当状態",
+    ]
+    st.dataframe(df_hist[hist_cols], width="stretch")
 else:
     st.info("まだ引当明細はありません")

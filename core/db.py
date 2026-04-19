@@ -236,6 +236,57 @@ def get_allocatable_stock_by_item():
     return rows
 
 
+def build_alloc_status(qty_required: float, qty_allocated: float) -> str:
+    """
+    明細の数量だけから見た引当充足度（未引当 / 一部引当 / 引当済）。
+    order_state_logs の state_code とは別の表示用ラベル。
+    """
+    req = float(qty_required or 0)
+    alloc = float(qty_allocated or 0)
+    if alloc <= 1e-9:
+        return "未引当"
+    if alloc < req - 1e-9:
+        return "一部引当"
+    return "引当済"
+
+
+def get_order_competition_by_item(item_code: str) -> list:
+    """
+    同一商品コードを持つ全出荷明細の横断一覧（案件競合の可視化用）。
+    """
+    code = (item_code or "").strip()
+    if not code:
+        return []
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                o.order_id,
+                o.reference,
+                l.line_id,
+                l.item_code,
+                l.qty_required,
+                l.qty_allocated,
+                l.shipped_qty,
+                (l.qty_required - l.qty_allocated) AS qty_pending,
+                (l.qty_allocated - l.shipped_qty) AS qty_unshipped,
+                o.created_at
+            FROM order_lines l
+            INNER JOIN orders o ON o.order_id = l.order_id
+            WHERE l.item_code = ?
+            ORDER BY o.created_at ASC, o.order_id ASC, l.line_id ASC
+            """,
+            (code,),
+        )
+        rows = []
+        for r in cur.fetchall():
+            d = dict(r)
+            d["alloc_status"] = build_alloc_status(d["qty_required"], d["qty_allocated"])
+            rows.append(d)
+        return rows
+
+
 def _fetch_current_stock_rows(cur):
     cur.execute("""
     SELECT
@@ -507,7 +558,9 @@ def get_recent_order_lines(limit=50):
             l.item_code,
             l.qty_required,
             l.qty_allocated,
-            (l.qty_required - l.qty_allocated) AS qty_pending
+            l.shipped_qty,
+            (l.qty_required - l.qty_allocated) AS qty_pending,
+            (l.qty_allocated - l.shipped_qty) AS qty_unshipped
         FROM order_lines l
         JOIN orders o ON o.order_id = l.order_id
         ORDER BY l.line_id DESC

@@ -1,8 +1,36 @@
 import streamlit as st
 import pandas as pd
-from core.db import init_db, get_allocatable_stock_by_item_enhanced, log_audit_event
+from core.db import (
+    init_db,
+    get_allocatable_stock_by_item_enhanced,
+    get_allocatable_stock_by_item,
+    get_order_competition_by_item,
+    build_alloc_status,
+    log_audit_event,
+)
 
 init_db()
+
+
+def _competition_display_rows(rows):
+    out = []
+    for r in rows:
+        ref = (r.get("reference") or "").strip() or "(番号なし)"
+        out.append(
+            {
+                "出荷指示番号": ref,
+                "明細ID": int(r["line_id"]),
+                "必要数": float(r["qty_required"]),
+                "引当済": float(r["qty_allocated"]),
+                "出荷済": float(r["shipped_qty"]),
+                "未引当": float(r["qty_pending"]),
+                "未出荷引当": float(r["qty_unshipped"]),
+                "引当状態": r.get("alloc_status")
+                or build_alloc_status(r["qty_required"], r["qty_allocated"]),
+            }
+        )
+    return out
+
 
 st.title("📊 引当可能在庫（P0最小共通基盤版）")
 st.write(
@@ -56,3 +84,19 @@ if rows:
     )
 else:
     st.info("物理在庫も引当明細もまだありません")
+
+st.divider()
+st.subheader("案件横断の使用中一覧")
+st.caption("引当可能在庫が 0 に近い理由や、同一商品の他案件の取り合いを確認できます。")
+candidates = get_allocatable_stock_by_item()
+codes = sorted({r["item_code"] for r in candidates}) if candidates else []
+if not codes:
+    st.info("案件一覧を表示する商品コードがありません（物理在庫または未出荷引当のある商品が必要です）。")
+else:
+    pick = st.selectbox("商品コード", options=codes, key="alloc_stock_competition_item")
+    comp = get_order_competition_by_item(pick)
+    disp = _competition_display_rows(comp)
+    if not disp:
+        st.info("この商品コードの出荷明細はまだありません。")
+    else:
+        st.dataframe(pd.DataFrame(disp), width="stretch")
