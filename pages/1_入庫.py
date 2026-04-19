@@ -1,6 +1,8 @@
 import streamlit as st
 from datetime import datetime
-from core.db import insert_transaction, get_recent_transactions
+from core.db import init_db, insert_transaction, get_recent_transactions, log_audit_event
+
+init_db()
 
 st.title("📥 入庫処理")
 
@@ -35,6 +37,7 @@ with st.form("receipt_form"):
         elif qty <= 0:
             st.error("数量は0より大きくしてください")
         else:
+            tx_time = datetime.now().isoformat(timespec="seconds")
             insert_transaction(
                 tx_type="receipt",
                 item_code=item_code,
@@ -43,7 +46,20 @@ with st.form("receipt_form"):
                 lot_no=lot_no or None,
                 reason=reason or None,
                 operator=operator or None,
-                tx_time=datetime.now().isoformat(timespec="seconds"),
+                tx_time=tx_time,
+            )
+            log_audit_event(
+                event_type="RECEIPT",
+                user_id=operator or None,
+                item_code=item_code,
+                location_code=location_code,
+                after_value={
+                    "qty": float(qty),
+                    "lot_no": lot_no or None,
+                    "reason": reason or None,
+                    "tx_time": tx_time,
+                },
+                free_note="入庫処理",
             )
             st.success("入庫を記録しました")
             st.rerun()

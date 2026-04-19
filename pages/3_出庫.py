@@ -1,6 +1,12 @@
 import streamlit as st
 from datetime import datetime
-from core.db import init_db, get_current_stock, insert_transaction, get_recent_transactions
+from core.db import (
+    init_db,
+    get_current_stock,
+    insert_transaction,
+    get_recent_transactions,
+    log_audit_event,
+)
 
 init_db()
 
@@ -49,6 +55,7 @@ with st.form("issue_form"):
             if qty > available:
                 st.error(f"在庫不足です。現在庫: {available}")
             else:
+                tx_time = datetime.now().isoformat(timespec="seconds")
                 insert_transaction(
                     tx_type="issue",
                     item_code=item_code,
@@ -56,7 +63,21 @@ with st.form("issue_form"):
                     qty=qty,
                     reason=reason or None,
                     operator=operator or None,
-                    tx_time=datetime.now().isoformat(timespec="seconds"),
+                    tx_time=tx_time,
+                )
+                log_audit_event(
+                    event_type="ISSUE",
+                    user_id=operator or None,
+                    item_code=item_code,
+                    location_code=location_code,
+                    before_value={"stock_qty": float(available)},
+                    after_value={
+                        "qty": float(qty),
+                        "stock_qty": float(available) - float(qty),
+                        "reason": reason or None,
+                        "tx_time": tx_time,
+                    },
+                    free_note="出庫処理",
                 )
                 st.success("出庫を記録しました")
                 st.rerun()

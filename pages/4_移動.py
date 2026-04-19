@@ -1,6 +1,12 @@
 import streamlit as st
 from datetime import datetime
-from core.db import init_db, get_current_stock, insert_transaction, get_recent_transactions
+from core.db import (
+    init_db,
+    get_current_stock,
+    insert_transaction,
+    get_recent_transactions,
+    log_audit_event,
+)
 
 init_db()
 
@@ -73,6 +79,24 @@ with st.form("move_form"):
                     reason=reason or None,
                     operator=operator or None,
                     tx_time=tx_time,
+                )
+                log_audit_event(
+                    event_type="MOVE",
+                    user_id=operator or None,
+                    item_code=item_code,
+                    before_value={
+                        "from_location": from_location,
+                        "from_stock_qty": float(available),
+                    },
+                    after_value={
+                        "from_location": from_location,
+                        "to_location": to_location,
+                        "qty": float(qty),
+                        "from_stock_qty": float(available) - float(qty),
+                        "reason": reason or None,
+                        "tx_time": tx_time,
+                    },
+                    free_note="移動処理",
                 )
                 st.success("移動を記録しました")
                 st.rerun()

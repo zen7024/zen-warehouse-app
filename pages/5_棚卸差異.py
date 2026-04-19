@@ -1,6 +1,12 @@
 import streamlit as st
 from datetime import datetime
-from core.db import init_db, get_current_stock, insert_transaction, get_recent_transactions
+from core.db import (
+    init_db,
+    get_current_stock,
+    insert_transaction,
+    get_recent_transactions,
+    log_audit_event,
+)
 
 init_db()
 
@@ -52,6 +58,7 @@ with st.form("count_adjust_form"):
             else:
                 tx_type = "count_plus" if delta > 0 else "count_minus"
                 qty = abs(delta)
+                tx_time = datetime.now().isoformat(timespec="seconds")
                 insert_transaction(
                     tx_type=tx_type,
                     item_code=item_code,
@@ -59,7 +66,23 @@ with st.form("count_adjust_form"):
                     qty=qty,
                     reason=reason or None,
                     operator=operator or None,
-                    tx_time=datetime.now().isoformat(timespec="seconds"),
+                    tx_time=tx_time,
+                )
+                log_audit_event(
+                    event_type="COUNT_DIFF",
+                    user_id=operator or None,
+                    item_code=item_code,
+                    location_code=location_code,
+                    before_value={"book_qty": float(book_qty)},
+                    after_value={
+                        "physical_qty": float(physical_qty),
+                        "delta": float(delta),
+                        "qty": float(qty),
+                        "tx_type": tx_type,
+                        "reason": reason or None,
+                        "tx_time": tx_time,
+                    },
+                    free_note="棚卸差異処理",
                 )
                 st.success(
                     f"棚卸差異を記録しました（現在庫 {book_qty:g} → 実棚 {physical_qty:g}、"
