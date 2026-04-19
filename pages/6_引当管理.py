@@ -181,14 +181,8 @@ def render_order_state_section(order_id: int, title: str, key_prefix: str, opera
 
             if state_code == "HOLD":
                 st.caption("HOLD推奨理由: SHORTAGE（引当ロケ不足）")
-                if st.button("理由をSHORTAGEに設定", key=f"{key_prefix}_set_shortage_{lid}"):
-                    st.session_state[f"{key_prefix}_reason_{lid}"] = "SHORTAGE"
-                    st.rerun()
             elif state_code == "REALLOC_PENDING":
                 st.caption("REALLOC_PENDING推奨理由: RELOCATION（別ロケ再配分）")
-                if st.button("理由をRELOCATIONに設定", key=f"{key_prefix}_set_relocation_{lid}"):
-                    st.session_state[f"{key_prefix}_reason_{lid}"] = "RELOCATION"
-                    st.rerun()
 
             approval_status = st.selectbox(
                 "承認状態",
