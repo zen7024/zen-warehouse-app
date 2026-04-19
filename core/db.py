@@ -26,6 +26,7 @@ STATE_LABELS = {
 }
 
 REASON_LABELS = {
+    "NORMAL_SHIPMENT": "通常出荷",
     "SHORTAGE": "現物不足",
     "RELOCATION": "別ロケ再配分",
     "CUSTOMER_CHANGE": "客先変更",
@@ -898,6 +899,204 @@ def release_allocation_for_line(line_id, release_qty):
     return True, f"引当を {total_cut:g} 解除しました（商品 {line['item_code']}）"
 
 
+def _get_line_allocation_breakdown(cur, line_id):
+    cur.execute(
+        """
+        SELECT
+            location_code,
+            SUM(allocated_qty) AS allocated_qty,
+            SUM(shipped_qty) AS shipped_qty
+        FROM allocation_details
+        WHERE line_id = ?
+        GROUP BY location_code
+        ORDER BY location_code
+        """,
+        (line_id,),
+    )
+    rows = []
+    for r in cur.fetchall():
+        alloc = float(r["allocated_qty"] or 0.0)
+        shipped = float(r["shipped_qty"] or 0.0)
+        rows.append(
+            {
+                "location_code": r["location_code"],
+                "allocated_qty": alloc,
+                "shipped_qty": shipped,
+                "qty_unshipped": alloc - shipped,
+            }
+        )
+    return rows
+
+
+def reallocate_shortage_for_line(
+    line_id,
+    from_location,
+    to_location,
+    qty,
+    changed_by=None,
+    reason_code="RELOCATION",
+):
+    """
+    同一 line_id 内で未出荷引当をロケ間で付け替える（総引当・出荷済は不変）。
+
+    戻り値: (成功, メッセージ)
+    """
+    try:
+        q = float(qty)
+    except (TypeError, ValueError):
+        return False, "再引当数量が不正です"
+    if q <= 0:
+        return False, "再引当数量は0より大きくしてください"
+
+    from_loc = (from_location or "").strip()
+    to_loc = (to_location or "").strip()
+    if not from_loc or not to_loc:
+        return False, "再引当元/再引当先ロケーションを指定してください"
+    if from_loc == to_loc:
+        return False, "再引当元と再引当先は別ロケーションを指定してください"
+
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT l.line_id, l.order_id, l.item_code, l.qty_allocated, l.shipped_qty, o.reference
+            FROM order_lines l
+            JOIN orders o ON o.order_id = l.order_id
+            WHERE l.line_id = ?
+            """,
+            (line_id,),
+        )
+        line = cur.fetchone()
+        if not line:
+            return False, "明細が見つかりません"
+
+        before_breakdown = _get_line_allocation_breakdown(cur, line_id)
+
+        cur.execute(
+            """
+            SELECT detail_id, allocated_qty, shipped_qty
+            FROM allocation_details
+            WHERE line_id = ? AND location_code = ?
+            ORDER BY detail_id DESC
+            LIMIT 1
+            """,
+            (line_id, from_loc),
+        )
+        from_detail = cur.fetchone()
+        if not from_detail:
+            return False, f"再引当元ロケーション {from_loc} の引当明細がありません"
+        from_alloc = float(from_detail["allocated_qty"])
+        from_shipped = float(from_detail["shipped_qty"])
+        from_unshipped = from_alloc - from_shipped
+        if q > from_unshipped + 1e-6:
+            return False, f"再引当元ロケーションの未出荷引当は {from_unshipped:g} までです"
+
+        # 再引当先の現在庫余力チェック（既存引当を差し引いた引当可能在庫）
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(
+                CASE
+                    WHEN tx_type IN ('receipt', 'move_in', 'count_plus') THEN qty
+                    WHEN tx_type IN ('issue', 'move_out', 'count_minus') THEN -qty
+                    ELSE 0
+                END
+            ), 0) AS stock_qty
+            FROM inventory_transactions
+            WHERE item_code = ? AND location_code = ?
+            """,
+            (line["item_code"], to_loc),
+        )
+        to_stock = float(cur.fetchone()["stock_qty"] or 0.0)
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(ad.allocated_qty - ad.shipped_qty), 0) AS reserved_qty
+            FROM allocation_details ad
+            JOIN order_lines ol ON ol.line_id = ad.line_id
+            WHERE ol.item_code = ? AND ad.location_code = ?
+            """,
+            (line["item_code"], to_loc),
+        )
+        to_reserved = float(cur.fetchone()["reserved_qty"] or 0.0)
+        to_allocatable = max(to_stock - to_reserved, 0.0)
+        if q > to_allocatable + 1e-6:
+            return (
+                False,
+                f"再引当先ロケーション {to_loc} の引当可能在庫が不足しています（可能 {to_allocatable:g}）",
+            )
+
+        new_from_alloc = from_alloc - q
+        if new_from_alloc < from_shipped - 1e-9:
+            conn.rollback()
+            return False, "整合性エラー: 再引当元の allocated が shipped を下回るため中止しました"
+        if new_from_alloc <= 1e-9 and from_shipped <= 1e-9:
+            cur.execute("DELETE FROM allocation_details WHERE detail_id = ?", (from_detail["detail_id"],))
+        else:
+            cur.execute(
+                "UPDATE allocation_details SET allocated_qty = ? WHERE detail_id = ?",
+                (new_from_alloc, from_detail["detail_id"]),
+            )
+
+        cur.execute(
+            """
+            SELECT detail_id, allocated_qty
+            FROM allocation_details
+            WHERE line_id = ? AND location_code = ?
+            ORDER BY detail_id DESC
+            LIMIT 1
+            """,
+            (line_id, to_loc),
+        )
+        to_detail = cur.fetchone()
+        if to_detail:
+            cur.execute(
+                "UPDATE allocation_details SET allocated_qty = ? WHERE detail_id = ?",
+                (float(to_detail["allocated_qty"]) + q, to_detail["detail_id"]),
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO allocation_details (line_id, location_code, allocated_qty, shipped_qty)
+                VALUES (?, ?, ?, 0)
+                """,
+                (line_id, to_loc, q),
+            )
+
+        # 総量整合チェック（order_lines の意味は変更しない）
+        cur.execute(
+            "SELECT COALESCE(SUM(allocated_qty), 0) AS total_alloc FROM allocation_details WHERE line_id = ?",
+            (line_id,),
+        )
+        total_alloc = float(cur.fetchone()["total_alloc"] or 0.0)
+        if abs(total_alloc - float(line["qty_allocated"])) > 1e-6:
+            conn.rollback()
+            return False, "整合性エラー: 再引当後のロケ別引当合計が明細引当合計と一致しません"
+        cur.execute(
+            "SELECT COALESCE(SUM(shipped_qty), 0) AS total_shipped FROM allocation_details WHERE line_id = ?",
+            (line_id,),
+        )
+        total_shipped = float(cur.fetchone()["total_shipped"] or 0.0)
+        if abs(total_shipped - float(line["shipped_qty"])) > 1e-6:
+            conn.rollback()
+            return False, "整合性エラー: 再引当後のロケ別出荷済合計が明細出荷済合計と一致しません"
+
+        after_breakdown = _get_line_allocation_breakdown(cur, line_id)
+        conn.commit()
+
+    log_audit_event(
+        event_type="REALLOCATE",
+        user_id=changed_by,
+        order_id=line["order_id"],
+        order_no=line["reference"],
+        line_id=line_id,
+        item_code=line["item_code"],
+        reason_code=reason_code or "RELOCATION",
+        before_value={"from_location": from_loc, "to_location": to_loc, "qty": q, "details": before_breakdown},
+        after_value={"from_location": from_loc, "to_location": to_loc, "qty": q, "details": after_breakdown},
+        free_note="同一明細内の再引当",
+    )
+    return True, f"再引当を実行しました（line_id={line_id}, {from_loc} -> {to_loc}, qty={q:g}）"
+
+
 def _row_to_dict(row):
     return dict(row) if row is not None else None
 
@@ -1065,6 +1264,38 @@ def save_line_state(
         if not row:
             return False, "明細が見つかりません"
 
+        state_reason = state_reason or None
+        approval_status = approval_status or "NOT_REQUIRED"
+        hold_flag_int = int(bool(hold_flag))
+        hold_reason = hold_reason if hold_flag_int else None
+
+        cur.execute(
+            """
+            SELECT state_code, state_reason, hold_flag, hold_reason, approval_required, approval_status
+            FROM order_state_logs
+            WHERE line_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (line_id,),
+        )
+        latest_state = cur.fetchone()
+        if latest_state:
+            latest_key = (
+                latest_state["state_code"],
+                latest_state["state_reason"] or None,
+                int(latest_state["hold_flag"] or 0),
+                latest_state["approval_status"] or "NOT_REQUIRED",
+            )
+            next_key = (
+                state_code,
+                state_reason,
+                hold_flag_int,
+                approval_status,
+            )
+            if latest_key == next_key:
+                return True, "変更なしです"
+
         before_state = {
             "inferred_state": infer_line_state(
                 row["qty_required"], row["qty_allocated"], row["shipped_qty"]
@@ -1073,7 +1304,7 @@ def save_line_state(
         after_state = {
             "state_code": state_code,
             "state_reason": state_reason,
-            "hold_flag": int(bool(hold_flag)),
+            "hold_flag": hold_flag_int,
             "hold_reason": hold_reason,
             "approval_required": int(bool(approval_required)),
             "approval_status": approval_status,
@@ -1104,7 +1335,7 @@ def save_line_state(
                 row["line_id"],
                 state_code,
                 state_reason,
-                int(bool(hold_flag)),
+                hold_flag_int,
                 hold_reason,
                 int(bool(approval_required)),
                 approval_status,
@@ -1307,6 +1538,59 @@ def get_shipment_blockers(order_id, line_ship_qty_map, reason_code=None):
         blockers.append("出荷理由コードを選択してください")
 
     return blockers
+
+
+def get_shortage_candidates_for_order(order_id, line_ship_qty_map):
+    """
+    出荷確定時のロケーション在庫不足候補を構造化して返す。
+
+    各要素:
+      - line_id
+      - item_code
+      - location_code
+      - requested_qty
+      - current_stock
+      - shortage_qty
+    """
+    shortages = []
+    current_stock_map = {
+        (r["item_code"], r["location_code"]): float(r["stock_qty"])
+        for r in get_current_stock()
+    }
+    ad_rows = [dict(r) for r in get_allocation_details_for_order(order_id)]
+    grouped = {}
+    for row in ad_rows:
+        grouped.setdefault(int(row["line_id"]), []).append(row)
+
+    consumed_map = defaultdict(float)
+    for line_id, details in grouped.items():
+        requested = float(line_ship_qty_map.get(line_id, 0.0) or 0.0)
+        if requested <= 0:
+            continue
+        remain = requested
+        for det in details:
+            if remain <= 1e-9:
+                break
+            key = (det["item_code"], det["location_code"])
+            now_stock = float(current_stock_map.get(key, 0.0)) - float(consumed_map.get(key, 0.0))
+            detail_unshipped = float(det["qty_unshipped"])
+            to_ship = min(remain, detail_unshipped)
+            if to_ship > now_stock + 1e-9:
+                current_stock = max(now_stock, 0.0)
+                shortage = max(to_ship - current_stock, 0.0)
+                shortages.append(
+                    {
+                        "line_id": int(line_id),
+                        "item_code": det["item_code"],
+                        "location_code": det["location_code"],
+                        "requested_qty": float(to_ship),
+                        "current_stock": float(current_stock),
+                        "shortage_qty": float(shortage),
+                    }
+                )
+            consumed_map[key] += max(min(to_ship, now_stock), 0.0)
+            remain -= to_ship
+    return shortages
 
 
 def get_release_blockers(line_id, reason_code=None, approval_required=False, approval_status="NOT_REQUIRED"):

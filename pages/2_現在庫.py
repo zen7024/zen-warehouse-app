@@ -10,6 +10,8 @@ st.write("在庫イベントから集計した現在庫を、P0最小共通基�
 warehouse_code = st.selectbox("倉庫", ["WH-001"], index=0)
 show_exception_only = st.checkbox("例外ありのみ表示")
 show_diff_only = st.checkbox("差異中のみ表示")
+item_filter = st.text_input("商品コードフィルタ（部分一致）", value="")
+location_filter = st.text_input("ロケーションフィルタ（部分一致）", value="")
 viewer_name = st.text_input("閲覧者", value="zen")
 
 rows = get_current_stock_breakdown()
@@ -43,6 +45,12 @@ if show_exception_only and "例外中" in df.columns:
     df = df[df["例外中"] == 1]
 if show_diff_only and "差異中" in df.columns:
     df = df[df["差異中"] == 1]
+if item_filter.strip() and "商品コード" in df.columns:
+    needle = item_filter.strip().lower()
+    df = df[df["商品コード"].astype(str).str.lower().str.contains(needle)]
+if location_filter.strip() and "ロケーション" in df.columns:
+    loc_needle = location_filter.strip().lower()
+    df = df[df["ロケーション"].astype(str).str.lower().str.contains(loc_needle)]
 
 col1, col2 = st.columns(2)
 col1.metric("在庫明細数", len(df))

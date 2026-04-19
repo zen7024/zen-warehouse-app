@@ -1,3 +1,5 @@
+from typing import Optional, Tuple
+
 import streamlit as st
 import pandas as pd
 from core.db import (
@@ -14,6 +16,81 @@ from core.db import (
 )
 
 init_db()
+
+
+def _next_state_after_release_from_line(line: dict) -> str:
+    """解除後の数量から order_state_logs 用の state_code を決める（未出荷引当ベース）。"""
+    req = float(line.get("qty_required") or 0)
+    alloc = float(line.get("qty_allocated") or 0)
+    ship = float(line.get("shipped_qty") or 0)
+    qty_unshipped = float(line.get("qty_unshipped", alloc - ship))
+    if qty_unshipped <= 1e-9:
+        return "RELEASED"
+    if alloc < req - 1e-9:
+        return "PARTIAL_ALLOCATED"
+    return "ALLOCATED"
+
+
+def _finalize_release_and_audit(
+    *,
+    line_id: int,
+    order_id: int,
+    snapshot_row: dict,
+    item_code: str,
+    released_qty: float,
+    reason_code: Optional[str],
+    approval_required: bool,
+    approval_status: str,
+    operator: Optional[str],
+    free_note_state: str,
+    free_note_audit: str,
+) -> Tuple[bool, Optional[str]]:
+    """
+    解除成功後: 最新明細で状態を判定し save_line_state / RELEASE 監査を行う。
+    戻り値: (成功, エラーメッセージ or None)
+    """
+    refreshed = get_enhanced_order_lines(order_id)
+    updated = next((r for r in refreshed if int(r["line_id"]) == line_id), None)
+    if not updated:
+        return False, "解除後の明細を再取得できませんでした"
+
+    next_state = _next_state_after_release_from_line(updated)
+    impact = int(updated.get("impact_order_count") or snapshot_row.get("impact_order_count") or 0)
+
+    save_line_state(
+        line_id=line_id,
+        state_code=next_state,
+        state_reason=reason_code or None,
+        hold_flag=False,
+        hold_reason=None,
+        approval_required=approval_required,
+        approval_status=approval_status,
+        impact_order_count=impact,
+        changed_by=operator.strip() or None,
+        free_note=free_note_state,
+    )
+    log_audit_event(
+        event_type="RELEASE",
+        user_id=operator.strip() or None,
+        order_id=order_id,
+        line_id=line_id,
+        item_code=item_code,
+        before_value={
+            "qty_allocated_before": float(snapshot_row["qty_allocated"]),
+            "shipped_qty_before": float(snapshot_row["shipped_qty"]),
+            "qty_unshipped_before": float(snapshot_row["qty_unshipped"]),
+        },
+        after_value={
+            "released_qty": float(released_qty),
+            "qty_allocated_after": float(updated["qty_allocated"]),
+            "qty_unshipped_after": float(updated["qty_unshipped"]),
+            "next_state": next_state,
+        },
+        reason_code=reason_code or None,
+        free_note=free_note_audit,
+    )
+    return True, None
+
 
 st.title("🔓 引当解除（P0最小共通基盤版）")
 st.write("未出荷引当だけを解除し、理由・承認・影響表示を載せます。")
@@ -129,31 +206,24 @@ for row in rows:
             else:
                 ok, msg = release_allocation_for_line(lid, qty_in)
                 if ok:
-                    save_line_state(
+                    fin_ok, fin_err = _finalize_release_and_audit(
                         line_id=lid,
-                        state_code="RELEASED",
-                        state_reason=reason_code or None,
-                        hold_flag=False,
-                        hold_reason=None,
+                        order_id=order_id,
+                        snapshot_row=row,
+                        item_code=item,
+                        released_qty=qty_in,
+                        reason_code=reason_code or None,
                         approval_required=approval_required,
                         approval_status=approval_status,
-                        impact_order_count=row["impact_order_count"],
-                        changed_by=operator.strip() or None,
-                        free_note="引当解除（指定数量）",
+                        operator=operator,
+                        free_note_state="引当解除（指定数量）",
+                        free_note_audit="指定数量解除",
                     )
-                    log_audit_event(
-                        event_type="RELEASE",
-                        user_id=operator.strip() or None,
-                        order_id=order_id,
-                        line_id=lid,
-                        item_code=item,
-                        before_value={"releasable": releasable},
-                        after_value={"released_qty": qty_in},
-                        reason_code=reason_code or None,
-                        free_note="指定数量解除",
-                    )
-                    st.success(msg)
-                    st.rerun()
+                    if not fin_ok:
+                        st.error(fin_err or "解除後処理に失敗しました")
+                    else:
+                        st.success(msg)
+                        st.rerun()
                 else:
                     st.error(msg)
         if st.button("全解除", key=f"release_all_{lid}"):
@@ -169,31 +239,24 @@ for row in rows:
             else:
                 ok, msg = release_allocation_for_line(lid, releasable)
                 if ok:
-                    save_line_state(
+                    fin_ok, fin_err = _finalize_release_and_audit(
                         line_id=lid,
-                        state_code="RELEASED",
-                        state_reason=reason_code or None,
-                        hold_flag=False,
-                        hold_reason=None,
+                        order_id=order_id,
+                        snapshot_row=row,
+                        item_code=item,
+                        released_qty=releasable,
+                        reason_code=reason_code or None,
                         approval_required=approval_required,
                         approval_status=approval_status,
-                        impact_order_count=row["impact_order_count"],
-                        changed_by=operator.strip() or None,
-                        free_note="引当解除（全解除）",
+                        operator=operator,
+                        free_note_state="引当解除（全解除）",
+                        free_note_audit="全解除",
                     )
-                    log_audit_event(
-                        event_type="RELEASE",
-                        user_id=operator.strip() or None,
-                        order_id=order_id,
-                        line_id=lid,
-                        item_code=item,
-                        before_value={"releasable": releasable},
-                        after_value={"released_qty": releasable},
-                        reason_code=reason_code or None,
-                        free_note="全解除",
-                    )
-                    st.success(msg)
-                    st.rerun()
+                    if not fin_ok:
+                        st.error(fin_err or "解除後処理に失敗しました")
+                    else:
+                        st.success(msg)
+                        st.rerun()
                 else:
                     st.error(msg)
 

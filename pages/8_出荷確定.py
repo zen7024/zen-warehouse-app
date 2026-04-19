@@ -9,6 +9,7 @@ from core.db import (
     get_approval_label,
     get_reason_options,
     get_shipment_blockers,
+    get_shortage_candidates_for_order,
     get_state_label,
     save_line_state,
     log_audit_event,
@@ -35,6 +36,21 @@ for r in orders:
 chosen_label = st.selectbox("出荷指示", labels)
 order_id = label_to_order_id[chosen_label]
 rows = get_enhanced_order_lines(order_id)
+
+if st.session_state.get("a06_order_id") not in (None, order_id):
+    for k in [
+        "a06_order_id",
+        "a06_line_ship_qty_map",
+        "a06_reason_code",
+        "a06_shortage_rows",
+        "a06_blockers",
+        "debug_a06",
+    ]:
+        st.session_state.pop(k, None)
+
+if st.session_state.get("a06_success_message"):
+    st.success(st.session_state.get("a06_success_message"))
+    st.session_state.pop("a06_success_message", None)
 
 if not rows:
     st.warning("この指示に明細がありません")
@@ -115,9 +131,11 @@ for row in rows:
     )
 
 reason_options = [""] + list(get_reason_options().keys())
+default_reason_code = "NORMAL_SHIPMENT"
 reason_code = st.selectbox(
     "出荷理由コード",
     options=reason_options,
+    index=reason_options.index(default_reason_code) if default_reason_code in reason_options else 0,
     format_func=lambda code: reason_labels.get(code, "選択してください") if code else "選択してください",
 )
 operator = st.text_input("作業者", value="zen")
@@ -158,7 +176,15 @@ if st.button("出荷確定を実行", disabled=not has_unshipped, type="primary"
         st.error("出荷確定を中止しました")
         for msg in blockers:
             st.write(f"- {msg}")
-        st.stop()
+
+        shortage_rows = get_shortage_candidates_for_order(order_id, line_ship_qty_map)
+        st.session_state["a06_order_id"] = order_id
+        st.session_state["a06_line_ship_qty_map"] = {int(k): float(v) for k, v in line_ship_qty_map.items()}
+        st.session_state["a06_reason_code"] = reason_code or None
+        st.session_state["a06_shortage_rows"] = shortage_rows
+        st.session_state["a06_blockers"] = blockers
+        st.session_state["debug_a06"] = []
+        st.rerun()
 
     ok, msg, summary = confirm_shipment_for_order(
         order_id,
@@ -199,3 +225,97 @@ if st.button("出荷確定を実行", disabled=not has_unshipped, type="primary"
         st.rerun()
     else:
         st.error(msg)
+
+a06_shortage_rows = st.session_state.get("a06_shortage_rows") or []
+a06_order_id = st.session_state.get("a06_order_id")
+if a06_order_id == order_id and a06_shortage_rows:
+    st.divider()
+    st.subheader("A-06対応: 保留へ切替")
+    st.write("ロケ不足時は、まずHOLDへ切替えて出荷を止め、別ロケ確認後にREALLOC_PENDINGへ更新します。")
+    st.caption("推奨操作: 1) まず HOLD  2) 次に別ロケ確認  3) その後 REALLOC_PENDING")
+
+    for msg in st.session_state.get("a06_blockers") or []:
+        st.write(f"- {msg}")
+
+    df_shortage = pd.DataFrame(a06_shortage_rows).rename(
+        columns={
+            "line_id": "不足明細ID",
+            "item_code": "商品コード",
+            "location_code": "不足ロケ",
+            "requested_qty": "必要数",
+            "current_stock": "現在庫",
+            "shortage_qty": "不足数",
+        }
+    )
+    st.dataframe(
+        df_shortage[["不足明細ID", "商品コード", "不足ロケ", "必要数", "現在庫", "不足数"]],
+        width="stretch",
+    )
+
+    line_meta = {int(r["line_id"]): dict(r) for r in rows}
+    shown_line_ids = []
+    for idx, srow in enumerate(a06_shortage_rows):
+        lid = int(srow["line_id"])
+        if lid in shown_line_ids:
+            continue
+        shown_line_ids.append(lid)
+        st.markdown(f"**明細 {lid} / 商品 {srow['item_code']} / 不足ロケ {srow['location_code']}**")
+        hold_reason_a06 = st.text_input(
+            "保留理由（A-06）",
+            value=f"A-06 引当ロケ不足: loc={srow['location_code']}",
+            key=f"a06_hold_reason_{lid}_{srow['location_code']}_{idx}",
+        )
+        if st.button(f"明細 {lid} をHOLD保存（SHORTAGE）", key=f"a06_hold_btn_{lid}_{srow['location_code']}_{idx}"):
+            st.session_state["debug_a06"] = [
+                "clicked",
+                f"line_id={lid}",
+            ]
+            current = line_meta.get(lid, {})
+            try:
+                ok, msg = save_line_state(
+                    line_id=lid,
+                    state_code="HOLD",
+                    state_reason="SHORTAGE",
+                    hold_flag=True,
+                    hold_reason=hold_reason_a06 or "A-06 引当ロケ不足",
+                    approval_required=bool(current.get("approval_required")),
+                    approval_status=current.get("approval_status") or "NOT_REQUIRED",
+                    impact_order_count=int(current.get("impact_order_count") or 0),
+                    changed_by=operator.strip() or None,
+                    free_note="A-06対応: 出荷確定画面からHOLD",
+                )
+                st.session_state["debug_a06"].append(f"ok={ok}, msg={msg}")
+                if ok:
+                    log_audit_event(
+                        event_type="A06_HOLD",
+                        user_id=operator.strip() or None,
+                        order_id=order_id,
+                        line_id=lid,
+                        item_code=srow["item_code"],
+                        location_code=srow["location_code"],
+                        reason_code="SHORTAGE",
+                        after_value=srow,
+                        free_note=hold_reason_a06 or None,
+                    )
+                    for k in [
+                        "a06_order_id",
+                        "a06_line_ship_qty_map",
+                        "a06_reason_code",
+                        "a06_shortage_rows",
+                        "a06_blockers",
+                        "debug_a06",
+                    ]:
+                        st.session_state.pop(k, None)
+                    st.session_state["a06_success_message"] = "A-06対応でHOLD保存しました。引当管理でREALLOC_PENDINGへ進めてください。"
+                    st.rerun()
+                else:
+                    st.error("HOLD保存に失敗しました。debug_a06を確認してください。")
+            except Exception as e:
+                st.session_state["debug_a06"].append(f"exception={repr(e)}")
+                st.error("HOLD保存時に例外が発生しました。debug_a06を確認してください。")
+
+    debug_a06 = st.session_state.get("debug_a06") or []
+    if debug_a06:
+        st.caption("debug_a06")
+        for d in debug_a06:
+            st.write(d)

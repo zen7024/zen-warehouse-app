@@ -6,6 +6,8 @@ init_db()
 
 st.title("📋 棚卸差異処理")
 st.write("実棚数とシステム上の現在庫の差を記録し、在庫を合わせます。")
+# TODO(A-06): 別ロケ候補が見つからないケースを差異処理へ接続する余地あり
+# TODO(A-06): 将来、差異理由コードや状態管理（HOLD/REALLOC_PENDING）との連携を追加
 
 
 def _stock_at(rows, item_code: str, location_code: str) -> float:
