@@ -1,3 +1,5 @@
+import json
+
 import streamlit as st
 import pandas as pd
 from core.db import (
@@ -8,6 +10,7 @@ from core.db import (
     confirm_shipment_for_order,
     get_approval_label,
     get_reason_options,
+    get_recent_ship_confirm_logs,
     get_shipment_blockers,
     get_shortage_candidates_for_order,
     get_state_label,
@@ -16,6 +19,16 @@ from core.db import (
 )
 
 init_db()
+
+SHIP_REASON_LABELS = {
+    "NORMAL_SHIPMENT": "通常出荷",
+    "CUSTOMER_CHANGE": "客先変更",
+    "PRIORITY_CHANGE": "優先変更",
+    "PRIORITY_OVERRIDE": "優先出荷割り込み",
+    "UNPLANNED_LOCATION": "予定外ロケ",
+    "FIFO_EXCEPTION": "FIFO例外",
+    "OTHER": "その他",
+}
 
 st.title("🚚 出荷確定（P0最小共通基盤版）")
 st.write("未出荷数量・状態・承認要否を見ながら、異常時は止めて出荷確定します。")
@@ -111,7 +124,6 @@ else:
 has_unshipped = any(float(dict(row)["qty_unshipped"]) > 0 for row in rows)
 if not has_unshipped:
     st.info("この指示は未出荷の引当がありません。")
-    st.stop()
 
 line_ship_qty_map = {}
 st.subheader("今回出荷数量")
@@ -130,16 +142,23 @@ for row in rows:
         key=f"ship_qty_{line_id}",
     )
 
-reason_options = [""] + list(get_reason_options().keys())
+reason_options = [""] + list(SHIP_REASON_LABELS.keys())
 default_reason_code = "NORMAL_SHIPMENT"
 reason_code = st.selectbox(
     "出荷理由コード",
     options=reason_options,
     index=reason_options.index(default_reason_code) if default_reason_code in reason_options else 0,
-    format_func=lambda code: reason_labels.get(code, "選択してください") if code else "選択してください",
+    format_func=lambda code: SHIP_REASON_LABELS.get(code, "選択してください") if code else "選択してください",
 )
 operator = st.text_input("作業者", value="zen")
-priority_override = st.checkbox("予定外ロケ/FIFO例外あり")
+free_note = st.text_input(
+    "自由記述（任意）",
+    value="",
+    placeholder="例: 予定外ロケ使用、FIFO例外承認済み、優先案件対応 など",
+)
+unplanned_location = st.checkbox("予定外ロケあり")
+fifo_exception = st.checkbox("FIFO例外あり")
+priority_override = st.checkbox("優先出荷割り込みあり")
 manual_hold = st.checkbox("この指示を保留にする")
 hold_reason = st.text_input("保留理由", value="")
 
@@ -169,8 +188,13 @@ if st.button("出荷確定を実行", disabled=not has_unshipped, type="primary"
         st.stop()
 
     blockers = get_shipment_blockers(order_id, line_ship_qty_map, reason_code=reason_code or None)
-    if priority_override and not reason_code:
-        blockers.append("予定外ロケ/FIFO例外ありの場合は理由コードが必要です")
+    exception_flags = {
+        "unplanned_location": bool(unplanned_location),
+        "fifo_exception": bool(fifo_exception),
+        "priority_override": bool(priority_override),
+    }
+    if any(exception_flags.values()) and reason_code == "NORMAL_SHIPMENT":
+        blockers.append("例外ありの場合は通常出荷以外の理由コードを選択してください")
 
     if blockers:
         st.error("出荷確定を中止しました")
@@ -185,6 +209,22 @@ if st.button("出荷確定を実行", disabled=not has_unshipped, type="primary"
         st.session_state["a06_blockers"] = blockers
         st.session_state["debug_a06"] = []
         st.rerun()
+
+    before_lines = []
+    for row in rows:
+        requested = float(line_ship_qty_map.get(int(row["line_id"]), 0.0) or 0.0)
+        if requested <= 0:
+            continue
+        before_lines.append(
+            {
+                "line_id": int(row["line_id"]),
+                "item_code": row["item_code"],
+                "qty_allocated": float(row["qty_allocated"]),
+                "shipped_qty": float(row["shipped_qty"]),
+                "qty_unshipped": float(row["qty_unshipped"]),
+                "requested_ship_qty": requested,
+            }
+        )
 
     ok, msg, summary = confirm_shipment_for_order(
         order_id,
@@ -217,9 +257,17 @@ if st.button("出荷確定を実行", disabled=not has_unshipped, type="primary"
             user_id=operator.strip() or None,
             order_id=order_id,
             line_id=None,
-            after_value=summary,
+            before_value={
+                "lines": before_lines,
+                "exception_flags": exception_flags,
+            },
+            after_value={
+                "summary": summary,
+                "total_ship_qty": float(total_ship_qty),
+                "exception_flags": exception_flags,
+            },
             reason_code=reason_code or None,
-            free_note="出荷確定実行",
+            free_note=(free_note or "").strip() or None,
         )
         st.success(msg)
         st.rerun()
@@ -319,3 +367,40 @@ if a06_order_id == order_id and a06_shortage_rows:
         st.caption("debug_a06")
         for d in debug_a06:
             st.write(d)
+
+st.divider()
+st.subheader("最近の出荷履歴")
+ship_logs = get_recent_ship_confirm_logs(limit=10)
+if ship_logs:
+    log_rows = []
+    for r in ship_logs:
+        line_ids = "-"
+        item_codes = "-"
+        try:
+            after_value = json.loads(r["after_value"] or "{}")
+            if isinstance(after_value, list):
+                summary_rows = after_value
+            else:
+                summary_rows = after_value.get("summary") or []
+            line_ids = ", ".join(
+                str(int(s["line_id"])) for s in summary_rows if s.get("line_id") is not None
+            ) or "-"
+            item_codes = ", ".join(
+                sorted({str(s["item_code"]) for s in summary_rows if s.get("item_code")})
+            ) or "-"
+        except (AttributeError, TypeError, ValueError, KeyError):
+            pass
+        log_rows.append(
+            {
+                "出荷日時": r["event_at"],
+                "作業者": r["user_id"] or "-",
+                "指示ID": r["order_id"],
+                "明細ID": line_ids,
+                "商品コード": item_codes,
+                "出荷理由": SHIP_REASON_LABELS.get(r["reason_code"], reason_labels.get(r["reason_code"], r["reason_code"] or "-")),
+                "自由記述": r["free_note"] or "",
+            }
+        )
+    st.dataframe(pd.DataFrame(log_rows), width="stretch")
+else:
+    st.info("出荷履歴はまだありません。")

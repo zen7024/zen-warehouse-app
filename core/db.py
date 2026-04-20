@@ -31,6 +31,8 @@ REASON_LABELS = {
     "RELOCATION": "別ロケ再配分",
     "CUSTOMER_CHANGE": "客先変更",
     "PRIORITY_CHANGE": "優先変更",
+    "PRIORITY_OVERRIDE": "優先出荷割り込み",
+    "UNPLANNED_LOCATION": "予定外ロケ",
     "DELAYED_RECEIPT": "入荷遅延",
     "FIFO_EXCEPTION": "FIFO例外",
     "COUNT_DIFF": "棚卸差異",
@@ -1280,6 +1282,31 @@ def get_recent_release_logs(limit=20):
                 after_value
             FROM audit_logs
             WHERE event_type = 'RELEASE'
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return cur.fetchall()
+
+
+def get_recent_ship_confirm_logs(limit=20):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                event_at,
+                user_id,
+                order_id,
+                line_id,
+                item_code,
+                reason_code,
+                free_note,
+                before_value,
+                after_value
+            FROM audit_logs
+            WHERE event_type = 'SHIP_CONFIRM'
             ORDER BY id DESC
             LIMIT ?
             """,
