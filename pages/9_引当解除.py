@@ -10,14 +10,22 @@ from core.db import (
     get_approval_label,
     get_reason_options,
     get_release_blockers,
+    get_recent_release_logs,
     get_state_label,
     save_line_state,
-    log_audit_event,
     get_order_competition_by_item,
     build_alloc_status,
 )
 
 init_db()
+
+RELEASE_REASON_LABELS = {
+    "CUSTOMER_CHANGE": "客先変更",
+    "PRIORITY_REALLOC": "優先案件へ再配分",
+    "WRONG_ALLOC": "誤引当",
+    "STOCK_DIFF": "在庫差異",
+    "OTHER": "その他",
+}
 
 
 def _competition_display_rows(rows):
@@ -65,11 +73,9 @@ def _finalize_release_and_audit(
     approval_status: str,
     operator: Optional[str],
     free_note_state: str,
-    free_note_audit: str,
-    release_memo: Optional[str] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
-    解除成功後: 最新明細で状態を判定し save_line_state / RELEASE 監査を行う。
+    解除成功後: 最新明細で状態を判定し save_line_state を行う。
     戻り値: (成功, エラーメッセージ or None)
     """
     refreshed = get_enhanced_order_lines(order_id)
@@ -91,28 +97,6 @@ def _finalize_release_and_audit(
         impact_order_count=impact,
         changed_by=operator.strip() or None,
         free_note=free_note_state,
-    )
-    memo = (release_memo or "").strip()
-    audit_note = free_note_audit if not memo else f"{free_note_audit} | {memo}"
-    log_audit_event(
-        event_type="RELEASE",
-        user_id=operator.strip() or None,
-        order_id=order_id,
-        line_id=line_id,
-        item_code=item_code,
-        before_value={
-            "qty_allocated_before": float(snapshot_row["qty_allocated"]),
-            "shipped_qty_before": float(snapshot_row["shipped_qty"]),
-            "qty_unshipped_before": float(snapshot_row["qty_unshipped"]),
-        },
-        after_value={
-            "released_qty": float(released_qty),
-            "qty_allocated_after": float(updated["qty_allocated"]),
-            "qty_unshipped_after": float(updated["qty_unshipped"]),
-            "next_state": next_state,
-        },
-        reason_code=reason_code or None,
-        free_note=audit_note,
     )
     return True, None
 
@@ -141,11 +125,11 @@ if not rows:
     st.warning("この指示に明細がありません")
     st.stop()
 
-reason_labels = get_reason_options()
+state_reason_labels = get_reason_options()
 df = pd.DataFrame(rows)
 if "state_reason" in df.columns:
     df["state_reason"] = df["state_reason"].map(
-        lambda code: reason_labels.get(code, code) if code else "-"
+        lambda code: state_reason_labels.get(code, RELEASE_REASON_LABELS.get(code, code)) if code else "-"
     )
 if "state_code" in df.columns:
     df["state_code"] = df["state_code"].map(get_state_label)
@@ -177,9 +161,9 @@ st.dataframe(df[show_cols], width="stretch")
 
 st.divider()
 st.subheader("解除操作")
-reason_options = [""] + list(get_reason_options().keys())
+reason_options = [""] + list(RELEASE_REASON_LABELS.keys())
 approval_options = ["NOT_REQUIRED", "WAITING", "APPROVED", "REJECTED"]
-operator = st.text_input("操作者", value="zen")
+operator = st.text_input("作業者（任意）", value="zen")
 
 any_releasable = False
 for row in rows:
@@ -192,7 +176,7 @@ for row in rows:
 
     st.markdown(f"**明細 ID {lid}** ・ {item}")
     release_memo = st.text_input(
-        "解除理由（メモ・任意）",
+        "自由記述（任意。理由コードがその他の場合は必須）",
         value="",
         placeholder="例: 優先変更のため一時解放、他案件への振り向け など",
         key=f"release_memo_{lid}",
@@ -217,9 +201,9 @@ for row in rows:
         )
     with c2:
         reason_code = st.selectbox(
-            "理由コード",
+            "解除理由コード（必須）",
             options=reason_options,
-            format_func=lambda code: reason_labels.get(code, "選択してください") if code else "選択してください",
+            format_func=lambda code: RELEASE_REASON_LABELS.get(code, "選択してください") if code else "選択してください",
             key=f"release_reason_{lid}",
         )
     with c3:
@@ -238,12 +222,19 @@ for row in rows:
                 reason_code=reason_code or None,
                 approval_required=approval_required,
                 approval_status=approval_status,
+                free_note=release_memo,
             )
             if blockers:
                 for msg in blockers:
                     st.error(msg)
             else:
-                ok, msg = release_allocation_for_line(lid, qty_in)
+                ok, msg = release_allocation_for_line(
+                    lid,
+                    qty_in,
+                    reason_code=reason_code,
+                    free_note=release_memo,
+                    operator=operator,
+                )
                 if ok:
                     fin_ok, fin_err = _finalize_release_and_audit(
                         line_id=lid,
@@ -256,8 +247,6 @@ for row in rows:
                         approval_status=approval_status,
                         operator=operator,
                         free_note_state="引当解除（指定数量）",
-                        free_note_audit="指定数量解除",
-                        release_memo=release_memo,
                     )
                     if not fin_ok:
                         st.error(fin_err or "解除後処理に失敗しました")
@@ -272,12 +261,19 @@ for row in rows:
                 reason_code=reason_code or None,
                 approval_required=approval_required,
                 approval_status=approval_status,
+                free_note=release_memo,
             )
             if blockers:
                 for msg in blockers:
                     st.error(msg)
             else:
-                ok, msg = release_allocation_for_line(lid, releasable)
+                ok, msg = release_allocation_for_line(
+                    lid,
+                    releasable,
+                    reason_code=reason_code,
+                    free_note=release_memo,
+                    operator=operator,
+                )
                 if ok:
                     fin_ok, fin_err = _finalize_release_and_audit(
                         line_id=lid,
@@ -290,8 +286,6 @@ for row in rows:
                         approval_status=approval_status,
                         operator=operator,
                         free_note_state="引当解除（全解除）",
-                        free_note_audit="全解除",
-                        release_memo=release_memo,
                     )
                     if not fin_ok:
                         st.error(fin_err or "解除後処理に失敗しました")
@@ -303,3 +297,24 @@ for row in rows:
 
 if not any_releasable:
     st.info("この指示には解除可能な未出荷引当がありません。")
+
+st.divider()
+st.subheader("最近の解除履歴")
+release_logs = get_recent_release_logs(limit=10)
+if release_logs:
+    log_rows = []
+    for r in release_logs:
+        log_rows.append(
+            {
+                "解除日時": r["event_at"],
+                "作業者": r["user_id"] or "-",
+                "指示ID": r["order_id"],
+                "明細ID": r["line_id"],
+                "商品コード": r["item_code"],
+                "解除理由": RELEASE_REASON_LABELS.get(r["reason_code"], r["reason_code"] or "-"),
+                "自由記述": r["free_note"] or "",
+            }
+        )
+    st.dataframe(pd.DataFrame(log_rows), width="stretch")
+else:
+    st.info("解除履歴はまだありません。")

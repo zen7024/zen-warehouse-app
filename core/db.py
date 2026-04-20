@@ -846,7 +846,13 @@ def list_orders_with_releasable_allocations():
         return cur.fetchall()
 
 
-def release_allocation_for_line(line_id, release_qty):
+def release_allocation_for_line(
+    line_id,
+    release_qty,
+    reason_code=None,
+    free_note=None,
+    operator=None,
+):
     """
     指定明細の未出荷引当のみを解除する。
 
@@ -867,14 +873,24 @@ def release_allocation_for_line(line_id, release_qty):
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("""
-        SELECT order_id, item_code, qty_required, qty_allocated, shipped_qty
-        FROM order_lines
-        WHERE line_id = ?
+        SELECT
+            l.order_id,
+            o.reference,
+            l.item_code,
+            l.qty_required,
+            l.qty_allocated,
+            l.shipped_qty
+        FROM order_lines l
+        JOIN orders o ON o.order_id = l.order_id
+        WHERE l.line_id = ?
         """, (line_id,))
         line = cur.fetchone()
         if not line:
             return False, "明細が見つかりません"
 
+        order_id = line["order_id"]
+        order_ref = line["reference"]
+        item_code = line["item_code"]
         qty_alloc = float(line["qty_allocated"])
         shipped = float(line["shipped_qty"])
         releasable = qty_alloc - shipped
@@ -949,7 +965,28 @@ def release_allocation_for_line(line_id, release_qty):
         )
         conn.commit()
 
-    return True, f"引当を {total_cut:g} 解除しました（商品 {line['item_code']}）"
+    log_audit_event(
+        event_type="RELEASE",
+        user_id=(operator or "").strip() or None,
+        order_id=order_id,
+        order_no=order_ref,
+        line_id=line_id,
+        item_code=item_code,
+        before_value={
+            "qty_allocated": qty_alloc,
+            "shipped_qty": shipped,
+            "qty_unshipped": releasable,
+        },
+        after_value={
+            "released_qty": float(total_cut),
+            "qty_allocated": float(new_alloc),
+            "qty_unshipped": float(new_alloc - shipped),
+        },
+        reason_code=reason_code or None,
+        free_note=(free_note or "").strip() or None,
+    )
+
+    return True, f"引当を {total_cut:g} 解除しました（商品 {item_code}）"
 
 
 def _get_line_allocation_breakdown(cur, line_id):
@@ -1224,6 +1261,31 @@ def log_audit_event(
             ),
         )
         conn.commit()
+
+
+def get_recent_release_logs(limit=20):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                event_at,
+                user_id,
+                order_id,
+                line_id,
+                item_code,
+                reason_code,
+                free_note,
+                before_value,
+                after_value
+            FROM audit_logs
+            WHERE event_type = 'RELEASE'
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return cur.fetchall()
 
 
 def infer_line_state(qty_required, qty_allocated, shipped_qty):
@@ -1646,10 +1708,18 @@ def get_shortage_candidates_for_order(order_id, line_ship_qty_map):
     return shortages
 
 
-def get_release_blockers(line_id, reason_code=None, approval_required=False, approval_status="NOT_REQUIRED"):
+def get_release_blockers(
+    line_id,
+    reason_code=None,
+    approval_required=False,
+    approval_status="NOT_REQUIRED",
+    free_note=None,
+):
     blockers = []
     if not reason_code:
         blockers.append("解除理由コードを選択してください")
+    if reason_code == "OTHER" and not (free_note or "").strip():
+        blockers.append("解除理由がその他の場合は自由記述を入力してください")
     if approval_required and approval_status != "APPROVED":
         blockers.append("承認待ちのため解除できません")
     return blockers
