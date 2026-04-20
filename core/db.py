@@ -1315,6 +1315,171 @@ def get_recent_ship_confirm_logs(limit=20):
         return cur.fetchall()
 
 
+def search_audit_logs(
+    event_types=None,
+    item_code=None,
+    order_id=None,
+    user_id=None,
+    reason_code=None,
+    keyword=None,
+    limit=200,
+):
+    where = []
+    params = []
+
+    if event_types:
+        if isinstance(event_types, str):
+            event_types = [event_types]
+        types = [t for t in event_types if t]
+        if types:
+            placeholders = ", ".join("?" for _ in types)
+            where.append(f"event_type IN ({placeholders})")
+            params.extend(types)
+
+    if item_code:
+        where.append("item_code = ?")
+        params.append(item_code)
+    if order_id is not None:
+        where.append("order_id = ?")
+        params.append(int(order_id))
+    if user_id:
+        where.append("user_id = ?")
+        params.append(user_id)
+    if reason_code:
+        where.append("reason_code = ?")
+        params.append(reason_code)
+    if keyword:
+        like = f"%{keyword}%"
+        where.append("(free_note LIKE ? OR before_value LIKE ? OR after_value LIKE ?)")
+        params.extend([like, like, like])
+
+    try:
+        limit_value = int(limit)
+    except (TypeError, ValueError):
+        limit_value = 200
+    limit_value = max(1, min(limit_value, 500))
+
+    sql = """
+        SELECT
+            id,
+            event_type,
+            event_at,
+            user_id,
+            role_name,
+            warehouse_code,
+            order_id,
+            order_no,
+            line_id,
+            item_code,
+            location_code,
+            before_value,
+            after_value,
+            reason_code,
+            free_note
+        FROM audit_logs
+    """
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(limit_value)
+
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        return cur.fetchall()
+
+
+def try_parse_json_text(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return value
+
+
+def _short_text(value, max_len=80):
+    text = str(value)
+    return text if len(text) <= max_len else text[:max_len] + "..."
+
+
+def _summarize_audit_value(value, list_label="list件数"):
+    parsed = try_parse_json_text(value)
+    if parsed is None:
+        return "-"
+
+    if isinstance(parsed, dict):
+        summary = parsed.get("summary")
+        if summary is not None:
+            return _summarize_audit_value(summary, list_label="summary件数")
+
+        if "lines" in parsed:
+            return _summarize_audit_value(parsed.get("lines"))
+
+        parts = []
+        for key in [
+            "released_qty",
+            "total_ship_qty",
+            "qty",
+            "requested_ship_qty",
+            "line_id",
+            "item_code",
+            "location_code",
+            "from_location",
+            "to_location",
+            "state_code",
+            "next_state",
+            "qty_allocated",
+            "qty_unshipped",
+        ]:
+            if key in parsed and parsed[key] not in (None, ""):
+                parts.append(f"{key}={parsed[key]}")
+        if parts:
+            return _short_text(" / ".join(parts), 120)
+        return "-"
+
+    if isinstance(parsed, list):
+        line_ids = []
+        item_codes = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            if item.get("line_id") is not None:
+                line_ids.append(str(item["line_id"]))
+            if item.get("item_code"):
+                item_codes.append(str(item["item_code"]))
+
+        parts = [f"{list_label}={len(parsed)}"]
+        if line_ids:
+            parts.append("line_id=" + ",".join(line_ids[:5]))
+        if item_codes:
+            parts.append("item=" + ",".join(sorted(set(item_codes))[:5]))
+        return _short_text(" / ".join(parts), 120)
+
+    return _short_text(parsed, 80)
+
+
+def summarize_audit_log_row(row):
+    d = dict(row)
+    return {
+        "event_at": d.get("event_at"),
+        "event_type": d.get("event_type"),
+        "user_id": d.get("user_id"),
+        "order_id": d.get("order_id"),
+        "line_id": d.get("line_id"),
+        "item_code": d.get("item_code"),
+        "location_code": d.get("location_code"),
+        "reason_code": d.get("reason_code"),
+        "free_note": d.get("free_note"),
+        "before_summary": _summarize_audit_value(d.get("before_value")),
+        "after_summary": _summarize_audit_value(d.get("after_value")),
+    }
+
+
 def infer_line_state(qty_required, qty_allocated, shipped_qty):
     req = float(qty_required or 0)
     alloc = float(qty_allocated or 0)
