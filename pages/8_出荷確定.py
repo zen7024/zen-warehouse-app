@@ -9,10 +9,10 @@ from core.db import (
     get_allocation_details_for_order,
     confirm_shipment_for_order,
     get_approval_label,
-    get_reason_options,
     get_recent_ship_confirm_logs,
     get_shipment_blockers,
     get_shortage_candidates_for_order,
+    get_reason_label,
     get_state_label,
     save_line_state,
     log_audit_event,
@@ -20,15 +20,15 @@ from core.db import (
 
 init_db()
 
-SHIP_REASON_LABELS = {
-    "NORMAL_SHIPMENT": "通常出荷",
-    "CUSTOMER_CHANGE": "客先変更",
-    "PRIORITY_CHANGE": "優先変更",
-    "PRIORITY_OVERRIDE": "優先出荷割り込み",
-    "UNPLANNED_LOCATION": "予定外ロケ",
-    "FIFO_EXCEPTION": "FIFO例外",
-    "OTHER": "その他",
-}
+SHIP_REASON_CODES = [
+    "NORMAL_SHIPMENT",
+    "CUSTOMER_CHANGE",
+    "PRIORITY_CHANGE",
+    "PRIORITY_OVERRIDE",
+    "UNPLANNED_LOCATION",
+    "FIFO_EXCEPTION",
+    "OTHER",
+]
 
 st.title("🚚 出荷確定（P0最小共通基盤版）")
 st.write("未出荷数量・状態・承認要否を見ながら、異常時は止めて出荷確定します。")
@@ -69,12 +69,9 @@ if not rows:
     st.warning("この指示に明細がありません")
     st.stop()
 
-reason_labels = get_reason_options()
 df = pd.DataFrame(rows)
 if "state_reason" in df.columns:
-    df["state_reason"] = df["state_reason"].map(
-        lambda code: reason_labels.get(code, code) if code else "-"
-    )
+    df["state_reason"] = df["state_reason"].map(get_reason_label)
 if "state_code" in df.columns:
     df["state_code"] = df["state_code"].map(get_state_label)
 if "approval_status" in df.columns:
@@ -142,13 +139,13 @@ for row in rows:
         key=f"ship_qty_{line_id}",
     )
 
-reason_options = [""] + list(SHIP_REASON_LABELS.keys())
+reason_options = [""] + SHIP_REASON_CODES
 default_reason_code = "NORMAL_SHIPMENT"
 reason_code = st.selectbox(
     "出荷理由コード",
     options=reason_options,
     index=reason_options.index(default_reason_code) if default_reason_code in reason_options else 0,
-    format_func=lambda code: SHIP_REASON_LABELS.get(code, "選択してください") if code else "選択してください",
+    format_func=lambda code: get_reason_label(code, "選択してください") if code else "選択してください",
 )
 operator = st.text_input("作業者", value="zen")
 free_note = st.text_input(
@@ -397,7 +394,7 @@ if ship_logs:
                 "指示ID": r["order_id"],
                 "明細ID": line_ids,
                 "商品コード": item_codes,
-                "出荷理由": SHIP_REASON_LABELS.get(r["reason_code"], reason_labels.get(r["reason_code"], r["reason_code"] or "-")),
+                "出荷理由": get_reason_label(r["reason_code"]),
                 "自由記述": r["free_note"] or "",
             }
         )

@@ -8,9 +8,9 @@ from core.db import (
     get_enhanced_order_lines,
     release_allocation_for_line,
     get_approval_label,
-    get_reason_options,
     get_release_blockers,
     get_recent_release_logs,
+    get_reason_label,
     get_state_label,
     save_line_state,
     get_order_competition_by_item,
@@ -19,13 +19,13 @@ from core.db import (
 
 init_db()
 
-RELEASE_REASON_LABELS = {
-    "CUSTOMER_CHANGE": "客先変更",
-    "PRIORITY_REALLOC": "優先案件へ再配分",
-    "WRONG_ALLOC": "誤引当",
-    "STOCK_DIFF": "在庫差異",
-    "OTHER": "その他",
-}
+RELEASE_REASON_CODES = [
+    "CUSTOMER_CHANGE",
+    "PRIORITY_REALLOC",
+    "WRONG_ALLOC",
+    "STOCK_DIFF",
+    "OTHER",
+]
 
 
 def _competition_display_rows(rows):
@@ -125,12 +125,9 @@ if not rows:
     st.warning("この指示に明細がありません")
     st.stop()
 
-state_reason_labels = get_reason_options()
 df = pd.DataFrame(rows)
 if "state_reason" in df.columns:
-    df["state_reason"] = df["state_reason"].map(
-        lambda code: state_reason_labels.get(code, RELEASE_REASON_LABELS.get(code, code)) if code else "-"
-    )
+    df["state_reason"] = df["state_reason"].map(get_reason_label)
 if "state_code" in df.columns:
     df["state_code"] = df["state_code"].map(get_state_label)
 if "approval_status" in df.columns:
@@ -161,7 +158,7 @@ st.dataframe(df[show_cols], width="stretch")
 
 st.divider()
 st.subheader("解除操作")
-reason_options = [""] + list(RELEASE_REASON_LABELS.keys())
+reason_options = [""] + RELEASE_REASON_CODES
 approval_options = ["NOT_REQUIRED", "WAITING", "APPROVED", "REJECTED"]
 operator = st.text_input("作業者（任意）", value="zen")
 
@@ -203,7 +200,7 @@ for row in rows:
         reason_code = st.selectbox(
             "解除理由コード（必須）",
             options=reason_options,
-            format_func=lambda code: RELEASE_REASON_LABELS.get(code, "選択してください") if code else "選択してください",
+            format_func=lambda code: get_reason_label(code, "選択してください") if code else "選択してください",
             key=f"release_reason_{lid}",
         )
     with c3:
@@ -311,7 +308,7 @@ if release_logs:
                 "指示ID": r["order_id"],
                 "明細ID": r["line_id"],
                 "商品コード": r["item_code"],
-                "解除理由": RELEASE_REASON_LABELS.get(r["reason_code"], r["reason_code"] or "-"),
+                "解除理由": get_reason_label(r["reason_code"]),
                 "自由記述": r["free_note"] or "",
             }
         )

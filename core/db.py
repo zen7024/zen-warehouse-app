@@ -31,7 +31,10 @@ REASON_LABELS = {
     "RELOCATION": "別ロケ再配分",
     "CUSTOMER_CHANGE": "客先変更",
     "PRIORITY_CHANGE": "優先変更",
+    "PRIORITY_REALLOC": "優先案件へ再配分",
     "PRIORITY_OVERRIDE": "優先出荷割り込み",
+    "WRONG_ALLOC": "誤引当",
+    "STOCK_DIFF": "在庫差異",
     "UNPLANNED_LOCATION": "予定外ロケ",
     "DELAYED_RECEIPT": "入荷遅延",
     "FIFO_EXCEPTION": "FIFO例外",
@@ -46,6 +49,20 @@ APPROVAL_LABELS = {
     "WAITING": "承認待ち",
     "APPROVED": "承認済",
     "REJECTED": "却下",
+}
+
+EVENT_LABELS = {
+    "ALLOCATE": "引当実行",
+    "SHIP_CONFIRM": "出荷確定",
+    "RELEASE": "引当解除",
+    "A06_HOLD": "A-06保留",
+    "MOVE": "移動",
+    "RECEIPT": "入庫",
+    "ISSUE": "出庫",
+    "COUNT_DIFF": "棚卸差異",
+    "REALLOCATE": "再引当",
+    "VIEW_ALLOCATABLE_STOCK": "引当可能在庫閲覧",
+    "STATE_CHANGE": "状態変更",
 }
 
 
@@ -1201,12 +1218,24 @@ def get_reason_options():
     return REASON_LABELS.copy()
 
 
+def get_reason_label(reason_code, default="-"):
+    return REASON_LABELS.get(reason_code, reason_code or default)
+
+
 def get_state_label(state_code):
     return STATE_LABELS.get(state_code, state_code or "-")
 
 
 def get_approval_label(status_code):
     return APPROVAL_LABELS.get(status_code, status_code or "-")
+
+
+def get_event_label(event_type, default="-"):
+    return EVENT_LABELS.get(event_type, event_type or default)
+
+
+def get_event_options():
+    return list(EVENT_LABELS.keys())
 
 
 def log_audit_event(
