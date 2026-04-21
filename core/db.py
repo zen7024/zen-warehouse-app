@@ -62,6 +62,7 @@ EVENT_LABELS = {
     "COUNT_DIFF": "棚卸差異",
     "REALLOCATE": "再引当",
     "VIEW_ALLOCATABLE_STOCK": "引当可能在庫閲覧",
+    "VIEW_CURRENT_STOCK": "現在庫閲覧",
     "STATE_CHANGE": "状態変更",
 }
 

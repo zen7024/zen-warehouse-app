@@ -152,7 +152,7 @@ st.caption("一覧は要約を短縮表示しています。詳細は下部の J
 
 with st.expander("イベント別件数", expanded=False):
     count_df = (
-        df["イベント"]
+        pd.Series((get_event_label(dict(row).get("event_type")) for row in rows), name="イベント")
         .value_counts()
         .rename_axis("イベント")
         .reset_index(name="件数")
