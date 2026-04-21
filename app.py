@@ -5,7 +5,7 @@ from datetime import datetime
 import streamlit_authenticator as stauth
 import yaml
 from yaml import SafeLoader
-from core.db import init_db, get_current_stock
+from core.db import init_db, get_current_stock, get_line_state_summary
 
 try:
     from streamlit_qrcode_scanner import qrcode_scanner
@@ -70,6 +70,14 @@ if authentication_status is None:
 elif authentication_status is False:
     st.error("ユーザー名またはパスワードが正しくありません")
     st.stop()
+
+state_summary = get_line_state_summary()
+summary_cols = st.columns(4)
+summary_cols[0].metric("保留件数", state_summary["hold_count"])
+summary_cols[1].metric("再引当待ち件数", state_summary["realloc_pending_count"])
+summary_cols[2].metric("承認待ち件数", state_summary["approval_waiting_count"])
+summary_cols[3].metric("例外影響あり件数", state_summary["impacted_exception_count"])
+st.caption("状態サマリは全出荷明細の最新状態に対する集計です。")
 
 # ログアウトボタン
 st.sidebar.write(f"👤 {name}")

@@ -1554,23 +1554,112 @@ def get_latest_line_state_map(order_id=None):
         return {int(r["line_id"]): dict(r) for r in rows}
 
 
-def get_line_impact_order_counts(order_id):
+def get_line_impact_order_counts(order_id=None):
     with get_connection() as conn:
         cur = conn.cursor()
+        params = []
+        where = ""
+        if order_id is not None:
+            where = "WHERE l1.order_id = ?"
+            params.append(order_id)
         cur.execute(
-            """
+            f"""
             SELECT l1.line_id, COUNT(DISTINCT l2.order_id) AS impact_order_count
             FROM order_lines l1
             LEFT JOIN order_lines l2
               ON l1.item_code = l2.item_code
              AND l1.order_id <> l2.order_id
              AND l2.qty_allocated > l2.shipped_qty
-            WHERE l1.order_id = ?
+            {where}
             GROUP BY l1.line_id
             """,
-            (order_id,),
+            params,
         )
         return {int(r["line_id"]): int(r["impact_order_count"] or 0) for r in cur.fetchall()}
+
+
+def _build_line_state_rows(line_rows, state_map, impact_map):
+    result = []
+    for row in line_rows:
+        line_id = int(row["line_id"])
+        state_row = state_map.get(line_id, {})
+        inferred_state = infer_line_state(
+            row["qty_required"], row["qty_allocated"], row["shipped_qty"]
+        )
+        state_code = state_row.get("state_code") or inferred_state
+        approval_status = state_row.get("approval_status") or "NOT_REQUIRED"
+        item = {
+            **row,
+            "state_code": state_code,
+            "state_label": get_state_label(state_code),
+            "state_reason": state_row.get("state_reason"),
+            "hold_flag": int(state_row.get("hold_flag") or 0),
+            "hold_reason": state_row.get("hold_reason"),
+            "approval_required": int(state_row.get("approval_required") or 0),
+            "approval_status": approval_status,
+            "approval_label": get_approval_label(approval_status),
+            "impact_order_count": int(state_row.get("impact_order_count") or impact_map.get(line_id, 0)),
+            "changed_by": state_row.get("changed_by"),
+            "changed_at": state_row.get("changed_at"),
+        }
+        result.append(item)
+    return result
+
+
+def get_all_line_state_rows():
+    """
+    全出荷明細を横断し、数量事実 + 最新状態を line 単位で返す。
+
+    例外影響あり件数は暫定的に impact_order_count > 0 を基準に扱う。
+    将来はより明示的な例外フラグへ寄せる余地あり。
+    """
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                l.order_id,
+                o.reference,
+                l.line_id,
+                l.item_code,
+                l.qty_required,
+                l.qty_allocated,
+                l.shipped_qty,
+                (l.qty_allocated - l.shipped_qty) AS qty_unshipped
+            FROM order_lines l
+            JOIN orders o ON o.order_id = l.order_id
+            ORDER BY l.order_id DESC, l.line_id
+            """
+        )
+        line_rows = [dict(r) for r in cur.fetchall()]
+
+    state_map = get_latest_line_state_map()
+    impact_map = get_line_impact_order_counts()
+    return _build_line_state_rows(line_rows, state_map, impact_map)
+
+
+def get_line_state_summary(rows=None):
+    if rows is None:
+        rows = get_all_line_state_rows()
+
+    return {
+        "hold_count": sum(1 for row in rows if int(row.get("hold_flag") or 0) == 1),
+        "realloc_pending_count": sum(
+            1 for row in rows if row.get("state_code") == "REALLOC_PENDING"
+        ),
+        "approval_waiting_count": sum(
+            1
+            for row in rows
+            if int(row.get("approval_required") or 0) == 1
+            and row.get("approval_status") == "WAITING"
+        ),
+        "partial_shipped_count": sum(
+            1 for row in rows if row.get("state_code") == "PARTIAL_SHIPPED"
+        ),
+        "impacted_exception_count": sum(
+            1 for row in rows if int(row.get("impact_order_count") or 0) > 0
+        ),
+    }
 
 
 def save_line_state(
@@ -1798,32 +1887,7 @@ def get_enhanced_order_lines(order_id):
     line_rows = [dict(r) for r in get_order_lines_shipment_view(order_id)]
     state_map = get_latest_line_state_map(order_id)
     impact_map = get_line_impact_order_counts(order_id)
-
-    result = []
-    for row in line_rows:
-        line_id = int(row["line_id"])
-        state_row = state_map.get(line_id, {})
-        inferred_state = infer_line_state(
-            row["qty_required"], row["qty_allocated"], row["shipped_qty"]
-        )
-        state_code = state_row.get("state_code") or inferred_state
-        approval_status = state_row.get("approval_status") or "NOT_REQUIRED"
-        item = {
-            **row,
-            "state_code": state_code,
-            "state_label": get_state_label(state_code),
-            "state_reason": state_row.get("state_reason"),
-            "hold_flag": int(state_row.get("hold_flag") or 0),
-            "hold_reason": state_row.get("hold_reason"),
-            "approval_required": int(state_row.get("approval_required") or 0),
-            "approval_status": approval_status,
-            "approval_label": get_approval_label(approval_status),
-            "impact_order_count": int(state_row.get("impact_order_count") or impact_map.get(line_id, 0)),
-            "changed_by": state_row.get("changed_by"),
-            "changed_at": state_row.get("changed_at"),
-        }
-        result.append(item)
-    return result
+    return _build_line_state_rows(line_rows, state_map, impact_map)
 
 
 def get_shipment_blockers(order_id, line_ship_qty_map, reason_code=None):
