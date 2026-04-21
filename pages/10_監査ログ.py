@@ -12,6 +12,12 @@ from core.db import (
 
 init_db()
 
+EXCEPTION_SHIP_REASON_CODES = {
+    "UNPLANNED_LOCATION",
+    "FIFO_EXCEPTION",
+    "PRIORITY_OVERRIDE",
+}
+
 
 def _display_text(value, default="-"):
     text = str(value).strip() if value is not None else ""
@@ -30,6 +36,19 @@ def _format_event_at(value):
     if text == "-":
         return "-"
     return text.replace("T", " ")
+
+
+def _count_exception_shipments(rows):
+    return sum(
+        1
+        for row in rows
+        if row["event_type"] == "SHIP_CONFIRM"
+        and row["reason_code"] in EXCEPTION_SHIP_REASON_CODES
+    )
+
+
+def _count_event_type(rows, event_type):
+    return sum(1 for row in rows if row["event_type"] == event_type)
 
 
 st.title("🧾 監査ログ")
@@ -75,7 +94,16 @@ rows = search_audit_logs(
     limit=int(limit),
 )
 
-st.metric("取得件数", len(rows))
+summary_c1, summary_c2, summary_c3, summary_c4 = st.columns(4)
+with summary_c1:
+    st.metric("取得件数", len(rows))
+with summary_c2:
+    st.metric("例外出荷件数", _count_exception_shipments(rows))
+with summary_c3:
+    st.metric("保留件数", _count_event_type(rows, "A06_HOLD"))
+with summary_c4:
+    st.metric("再引当件数", _count_event_type(rows, "REALLOCATE"))
+st.caption("件数サマリは、現在の検索結果に対する集計です。")
 
 if not rows:
     st.info("該当する監査ログはありません。")
