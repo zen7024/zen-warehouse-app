@@ -1642,6 +1642,60 @@ def get_all_line_state_rows():
     return _build_line_state_rows(line_rows, state_map, impact_map)
 
 
+def get_line_state_history(line_id, limit=50):
+    """
+    指定明細の状態履歴を新しい順で返す。
+
+    状態履歴が未登録でも数量事実は order_lines 側に残るため、
+    0件は異常ではなく「未記録」として扱う前提。
+    """
+    try:
+        line_id_value = int(line_id)
+    except (TypeError, ValueError):
+        return []
+
+    try:
+        limit_value = int(limit)
+    except (TypeError, ValueError):
+        limit_value = 50
+    limit_value = max(1, min(limit_value, 500))
+
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                s.id,
+                s.order_id,
+                o.reference,
+                s.line_id,
+                l.item_code,
+                l.qty_required,
+                l.qty_allocated,
+                l.shipped_qty,
+                (l.qty_allocated - l.shipped_qty) AS qty_unshipped,
+                s.state_code,
+                s.state_reason,
+                s.hold_flag,
+                s.hold_reason,
+                s.approval_required,
+                s.approval_status,
+                s.impact_order_count,
+                s.changed_by,
+                s.changed_at,
+                s.free_note
+            FROM order_state_logs s
+            LEFT JOIN orders o ON o.order_id = s.order_id
+            LEFT JOIN order_lines l ON l.line_id = s.line_id
+            WHERE s.line_id = ?
+            ORDER BY s.id DESC
+            LIMIT ?
+            """,
+            (line_id_value, limit_value),
+        )
+        return cur.fetchall()
+
+
 def get_line_state_summary(rows=None):
     if rows is None:
         rows = get_all_line_state_rows()

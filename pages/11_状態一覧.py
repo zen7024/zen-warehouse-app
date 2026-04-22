@@ -4,6 +4,7 @@ import streamlit as st
 from core.db import (
     get_all_line_state_rows,
     get_approval_label,
+    get_line_state_history,
     get_line_state_summary,
     get_reason_label,
     get_state_label,
@@ -48,6 +49,10 @@ def _format_event_at(value):
     if text == "-":
         return "-"
     return text.replace("T", " ")
+
+
+def _approval_required_label(value):
+    return "要" if int(value or 0) == 1 else "-"
 
 
 def _build_detail_target(page, row):
@@ -237,6 +242,49 @@ if selected_row is not None:
         f"指示ID {selected_row['order_id']} / 明細ID {selected_row['line_id']} / "
         f"商品コード {_display_text(selected_row.get('item_code'))}"
     )
+    st.subheader("状態履歴")
+    history_rows = get_line_state_history(selected_row["line_id"])
+    if not history_rows:
+        st.info(
+            "この明細には明示的な状態履歴がまだありません。"
+            "現在の状態表示は数量事実からの推定を含む可能性があります。"
+        )
+    else:
+        history_display_rows = []
+        for history_row in history_rows:
+            history_display_rows.append(
+                {
+                    "更新日時": _format_event_at(history_row["changed_at"]),
+                    "状態": get_state_label(history_row["state_code"]),
+                    "状態理由": get_reason_label(history_row["state_reason"]),
+                    "保留": "はい" if int(history_row["hold_flag"] or 0) == 1 else "-",
+                    "保留理由": _display_text(history_row["hold_reason"]),
+                    "承認要否": _approval_required_label(history_row["approval_required"]),
+                    "承認状態": get_approval_label(history_row["approval_status"]),
+                    "影響案件数": int(history_row["impact_order_count"] or 0),
+                    "更新者": _display_text(history_row["changed_by"]),
+                    "自由記述": _display_text(history_row["free_note"]),
+                }
+            )
+        history_df = pd.DataFrame(history_display_rows)
+        st.dataframe(
+            history_df[
+                [
+                    "更新日時",
+                    "状態",
+                    "状態理由",
+                    "保留",
+                    "保留理由",
+                    "承認要否",
+                    "承認状態",
+                    "影響案件数",
+                    "更新者",
+                    "自由記述",
+                ]
+            ],
+            width="stretch",
+            hide_index=True,
+        )
     action_cols = st.columns(3)
     with action_cols[0]:
         if st.button("監査ログで確認", type="primary"):
