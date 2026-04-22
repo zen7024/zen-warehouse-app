@@ -19,6 +19,7 @@ from core.db import (
 )
 
 init_db()
+DETAIL_TARGET_PAGE = "ship_confirm"
 
 SHIP_REASON_CODES = [
     "NORMAL_SHIPMENT",
@@ -30,6 +31,36 @@ SHIP_REASON_CODES = [
     "OTHER",
 ]
 
+
+def _apply_detail_target(orders):
+    target = st.session_state.get("detail_target")
+    if not target or target.get("target_page") != DETAIL_TARGET_PAGE:
+        return None
+
+    target_order_id = target.get("order_id")
+    target_line_id = target.get("line_id")
+    order_ids = {int(r["order_id"]) for r in orders}
+
+    st.session_state.pop("detail_target", None)
+    if target_order_id not in order_ids:
+        st.session_state["ship_confirm_nav_warning"] = (
+            f"状態一覧から受け取った 指示ID {target_order_id} は、出荷確定対象として見つかりませんでした。"
+        )
+        return None
+
+    st.session_state["ship_confirm_target"] = {
+        "source_page": target.get("source_page"),
+        "target_page": target.get("target_page"),
+        "order_id": int(target_order_id),
+        "line_id": int(target_line_id) if target_line_id is not None else None,
+        "item_code": target.get("item_code"),
+        "state_code": target.get("state_code"),
+    }
+    st.session_state["ship_confirm_nav_message"] = (
+        f"状態一覧から 指示ID {target_order_id} / 明細ID {target_line_id} を引き継いで表示しています。"
+    )
+    return st.session_state["ship_confirm_target"]
+
 st.title("🚚 出荷確定（P0最小共通基盤版）")
 st.write("未出荷数量・状態・承認要否を見ながら、異常時は止めて出荷確定します。")
 
@@ -37,6 +68,8 @@ orders = list_orders_for_ship_confirm()
 if not orders:
     st.info("出荷指示がありません。先に引当管理で指示を登録してください。")
     st.stop()
+
+target = _apply_detail_target(orders) or st.session_state.get("ship_confirm_target")
 
 labels = []
 label_to_order_id = {}
@@ -46,9 +79,18 @@ for r in orders:
     labels.append(label)
     label_to_order_id[label] = r["order_id"]
 
-chosen_label = st.selectbox("出荷指示", labels)
+default_index = 0
+if target:
+    target_order_id = int(target["order_id"])
+    for idx, label in enumerate(labels):
+        if label_to_order_id[label] == target_order_id:
+            default_index = idx
+            break
+
+chosen_label = st.selectbox("出荷指示", labels, index=default_index)
 order_id = label_to_order_id[chosen_label]
 rows = get_enhanced_order_lines(order_id)
+target_line_id = int(target["line_id"]) if target and target.get("order_id") == order_id and target.get("line_id") is not None else None
 
 if st.session_state.get("a06_order_id") not in (None, order_id):
     for k in [
@@ -65,9 +107,32 @@ if st.session_state.get("a06_success_message"):
     st.success(st.session_state.get("a06_success_message"))
     st.session_state.pop("a06_success_message", None)
 
+if st.session_state.get("ship_confirm_nav_warning"):
+    st.info(st.session_state.get("ship_confirm_nav_warning"))
+    st.session_state.pop("ship_confirm_nav_warning", None)
+
+if st.session_state.get("ship_confirm_nav_message") and target_line_id is not None:
+    st.info(st.session_state.get("ship_confirm_nav_message"))
+    st.session_state.pop("ship_confirm_nav_message", None)
+
 if not rows:
     st.warning("この指示に明細がありません")
     st.stop()
+
+target_row = None
+if target_line_id is not None:
+    target_row = next((row for row in rows if int(row["line_id"]) == target_line_id), None)
+    if target_row is None:
+        st.info("状態一覧から引き継いだ明細は、この出荷指示内では見つかりませんでした。")
+    elif float(target_row.get("qty_unshipped") or 0) <= 0:
+        st.info("状態一覧から引き継いだ明細は、現在は未出荷数量がありません。")
+    else:
+        st.caption(
+            f"引き継ぎ対象: 明細ID {target_line_id} / 商品コード {target_row['item_code']} / "
+            f"未出荷 {float(target_row['qty_unshipped'] or 0):g}"
+        )
+
+action_rows = [target_row] if target_row is not None else rows
 
 df = pd.DataFrame(rows)
 if "state_reason" in df.columns:
@@ -118,13 +183,13 @@ if ad_rows:
 else:
     st.info("この指示にはロケーション別引当明細がありません（旧形式）。")
 
-has_unshipped = any(float(dict(row)["qty_unshipped"]) > 0 for row in rows)
+has_unshipped = any(float(dict(row)["qty_unshipped"]) > 0 for row in action_rows)
 if not has_unshipped:
-    st.info("この指示は未出荷の引当がありません。")
+    st.info("この画面で操作対象になる未出荷引当はありません。")
 
 line_ship_qty_map = {}
 st.subheader("今回出荷数量")
-for row in rows:
+for row in action_rows:
     d = dict(row)
     line_id = int(d["line_id"])
     qty_unshipped = float(d["qty_unshipped"])
@@ -160,7 +225,7 @@ manual_hold = st.checkbox("この指示を保留にする")
 hold_reason = st.text_input("保留理由", value="")
 
 if manual_hold:
-    for row in rows:
+    for row in action_rows:
         if st.button(f"明細 {row['line_id']} を保留保存", key=f"hold_{row['line_id']}"):
             ok, msg = save_line_state(
                 line_id=row["line_id"],

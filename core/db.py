@@ -1349,6 +1349,7 @@ def search_audit_logs(
     event_types=None,
     item_code=None,
     order_id=None,
+    line_id=None,
     user_id=None,
     reason_code=None,
     keyword=None,
@@ -1372,6 +1373,9 @@ def search_audit_logs(
     if order_id is not None:
         where.append("order_id = ?")
         params.append(int(order_id))
+    if line_id is not None:
+        where.append("line_id = ?")
+        params.append(int(line_id))
     if user_id:
         where.append("user_id = ?")
         params.append(user_id)

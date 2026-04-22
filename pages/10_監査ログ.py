@@ -17,6 +17,7 @@ EXCEPTION_SHIP_REASON_CODES = {
     "FIFO_EXCEPTION",
     "PRIORITY_OVERRIDE",
 }
+DETAIL_TARGET_PAGE = "audit_log"
 
 
 def _display_text(value, default="-"):
@@ -51,6 +52,24 @@ def _count_event_type(rows, event_type):
     return sum(1 for row in rows if row["event_type"] == event_type)
 
 
+def _apply_detail_target():
+    target = st.session_state.get("detail_target")
+    if not target or target.get("target_page") != DETAIL_TARGET_PAGE:
+        return
+
+    order_id = target.get("order_id")
+    line_id = target.get("line_id")
+    st.session_state["audit_log_order_id_text"] = str(order_id) if order_id is not None else ""
+    st.session_state["audit_log_line_id_text"] = str(line_id) if line_id is not None else ""
+    st.session_state["audit_log_nav_message"] = (
+        f"状態一覧から 指示ID {order_id} / 明細ID {line_id} を引き継いで表示しています。"
+    )
+    st.session_state.pop("detail_target", None)
+
+
+_apply_detail_target()
+
+
 st.title("🧾 監査ログ")
 st.write("誰が、いつ、何を、なぜ変えたかを横断で確認する最小画面です。")
 st.caption("まずは閲覧専用です。")
@@ -65,15 +84,27 @@ with st.expander("検索条件", expanded=True):
     )
     st.caption("イベント種別は未選択で全件表示です。複数選択して絞り込めます。")
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         item_code = st.text_input("商品コード", value="", placeholder="例: ITEM-001")
         user_id = st.text_input("作業者", value="", placeholder="例: zen")
     with c2:
-        order_id_text = st.text_input("指示ID", value="", placeholder="例: 1001")
-        reason_code = st.text_input("理由コード", value="", placeholder="例: NORMAL_SHIPMENT")
+        order_id_text = st.text_input(
+            "指示ID",
+            value=st.session_state.get("audit_log_order_id_text", ""),
+            placeholder="例: 1001",
+            key="audit_log_order_id_text",
+        )
+        line_id_text = st.text_input(
+            "明細ID",
+            value=st.session_state.get("audit_log_line_id_text", ""),
+            placeholder="例: 2001",
+            key="audit_log_line_id_text",
+        )
     with c3:
+        reason_code = st.text_input("理由コード", value="", placeholder="例: NORMAL_SHIPMENT")
         keyword = st.text_input("キーワード", value="", placeholder="自由記述や JSON 内の文字列")
+    with c4:
         limit = st.number_input("取得件数", min_value=1, max_value=500, value=100, step=10)
 
 order_id = None
@@ -84,10 +115,23 @@ if order_id_text.strip():
         st.error("指示IDは整数で入力してください。")
         st.stop()
 
+line_id = None
+if line_id_text.strip():
+    try:
+        line_id = int(line_id_text.strip())
+    except ValueError:
+        st.error("明細IDは整数で入力してください。")
+        st.stop()
+
+if st.session_state.get("audit_log_nav_message"):
+    st.info(st.session_state.get("audit_log_nav_message"))
+    st.session_state.pop("audit_log_nav_message", None)
+
 rows = search_audit_logs(
     event_types=event_types or None,
     item_code=item_code.strip() or None,
     order_id=order_id,
+    line_id=line_id,
     user_id=user_id.strip() or None,
     reason_code=reason_code.strip() or None,
     keyword=keyword.strip() or None,

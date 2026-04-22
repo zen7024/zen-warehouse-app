@@ -18,6 +18,7 @@ from core.db import (
 )
 
 init_db()
+DETAIL_TARGET_PAGE = "release"
 
 RELEASE_REASON_CODES = [
     "CUSTOMER_CHANGE",
@@ -26,6 +27,36 @@ RELEASE_REASON_CODES = [
     "STOCK_DIFF",
     "OTHER",
 ]
+
+
+def _apply_detail_target(orders):
+    target = st.session_state.get("detail_target")
+    if not target or target.get("target_page") != DETAIL_TARGET_PAGE:
+        return None
+
+    target_order_id = target.get("order_id")
+    target_line_id = target.get("line_id")
+    order_ids = {int(r["order_id"]) for r in orders}
+
+    st.session_state.pop("detail_target", None)
+    if target_order_id not in order_ids:
+        st.session_state["release_nav_warning"] = (
+            f"状態一覧から受け取った 指示ID {target_order_id} は、引当解除対象として見つかりませんでした。"
+        )
+        return None
+
+    st.session_state["release_target"] = {
+        "source_page": target.get("source_page"),
+        "target_page": target.get("target_page"),
+        "order_id": int(target_order_id),
+        "line_id": int(target_line_id) if target_line_id is not None else None,
+        "item_code": target.get("item_code"),
+        "state_code": target.get("state_code"),
+    }
+    st.session_state["release_nav_message"] = (
+        f"状態一覧から 指示ID {target_order_id} / 明細ID {target_line_id} を引き継いで表示しています。"
+    )
+    return st.session_state["release_target"]
 
 
 def _competition_display_rows(rows):
@@ -109,6 +140,8 @@ if not orders:
     st.info("解除可能な未出荷引当を含む出荷指示はありません。")
     st.stop()
 
+target = _apply_detail_target(orders) or st.session_state.get("release_target")
+
 labels = []
 label_to_order_id = {}
 for r in orders:
@@ -117,13 +150,45 @@ for r in orders:
     labels.append(label)
     label_to_order_id[label] = r["order_id"]
 
-chosen_label = st.selectbox("出荷指示", labels)
+default_index = 0
+if target:
+    target_order_id = int(target["order_id"])
+    for idx, label in enumerate(labels):
+        if label_to_order_id[label] == target_order_id:
+            default_index = idx
+            break
+
+chosen_label = st.selectbox("出荷指示", labels, index=default_index)
 order_id = label_to_order_id[chosen_label]
 rows = get_enhanced_order_lines(order_id)
+target_line_id = int(target["line_id"]) if target and target.get("order_id") == order_id and target.get("line_id") is not None else None
+
+if st.session_state.get("release_nav_warning"):
+    st.info(st.session_state.get("release_nav_warning"))
+    st.session_state.pop("release_nav_warning", None)
+
+if st.session_state.get("release_nav_message") and target_line_id is not None:
+    st.info(st.session_state.get("release_nav_message"))
+    st.session_state.pop("release_nav_message", None)
 
 if not rows:
     st.warning("この指示に明細がありません")
     st.stop()
+
+target_row = None
+if target_line_id is not None:
+    target_row = next((row for row in rows if int(row["line_id"]) == target_line_id), None)
+    if target_row is None:
+        st.info("状態一覧から引き継いだ明細は、この出荷指示内では見つかりませんでした。")
+    elif float(target_row.get("qty_unshipped") or 0) <= 0:
+        st.info("状態一覧から引き継いだ明細は、現在は解除可能な未出荷引当がありません。")
+    else:
+        st.caption(
+            f"引き継ぎ対象: 明細ID {target_line_id} / 商品コード {target_row['item_code']} / "
+            f"未出荷引当 {float(target_row['qty_unshipped'] or 0):g}"
+        )
+
+action_rows = [target_row] if target_row is not None else rows
 
 df = pd.DataFrame(rows)
 if "state_reason" in df.columns:
@@ -163,7 +228,7 @@ approval_options = ["NOT_REQUIRED", "WAITING", "APPROVED", "REJECTED"]
 operator = st.text_input("作業者（任意）", value="zen")
 
 any_releasable = False
-for row in rows:
+for row in action_rows:
     lid = int(row["line_id"])
     item = row["item_code"]
     releasable = float(row["qty_unshipped"])

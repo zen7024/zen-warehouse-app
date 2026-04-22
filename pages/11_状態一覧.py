@@ -11,6 +11,31 @@ from core.db import (
 )
 
 init_db()
+DETAIL_PAGE_PATHS = {
+    "audit_log": "pages/10_監査ログ.py",
+    "ship_confirm": "pages/8_出荷確定.py",
+    "release": "pages/9_引当解除.py",
+}
+SHIP_CONFIRM_ALLOWED_STATES = {
+    "PARTIAL_ALLOCATED",
+    "ALLOCATED",
+    "WORKING",
+    "PARTIAL_SHIPPED",
+}
+RELEASE_ALLOWED_STATES = {
+    "PARTIAL_ALLOCATED",
+    "ALLOCATED",
+    "REALLOC_PENDING",
+    "PARTIAL_SHIPPED",
+    "HOLD",
+}
+OPERATION_HIDDEN_STATES = {
+    "UNALLOCATED",
+    "RELEASED",
+    "SHIPPED",
+    "SENT_BACK",
+    "CANCELLED",
+}
 
 
 def _display_text(value, default="-"):
@@ -23,6 +48,47 @@ def _format_event_at(value):
     if text == "-":
         return "-"
     return text.replace("T", " ")
+
+
+def _build_detail_target(page, row):
+    return {
+        "source_page": "state_list",
+        "target_page": page,
+        "order_id": int(row["order_id"]),
+        "line_id": int(row["line_id"]),
+        "item_code": row.get("item_code"),
+        "state_code": row.get("state_code"),
+    }
+
+
+def _get_selected_row(selection_event, rows):
+    if not isinstance(selection_event, dict):
+        return None
+    selected_indexes = selection_event.get("selection", {}).get("rows", [])
+    if not selected_indexes:
+        return None
+    selected_index = selected_indexes[0]
+    if 0 <= selected_index < len(rows):
+        return rows[selected_index]
+    return None
+
+
+def _can_show_ship_confirm(row):
+    return (
+        row.get("state_code") not in OPERATION_HIDDEN_STATES
+        and float(row.get("qty_unshipped") or 0) > 0
+        and int(row.get("hold_flag") or 0) == 0
+        and row.get("approval_status") in {"NOT_REQUIRED", "APPROVED"}
+        and row.get("state_code") in SHIP_CONFIRM_ALLOWED_STATES
+    )
+
+
+def _can_show_release(row):
+    return (
+        row.get("state_code") not in OPERATION_HIDDEN_STATES
+        and float(row.get("qty_unshipped") or 0) > 0
+        and row.get("state_code") in RELEASE_ALLOWED_STATES
+    )
 
 
 st.title("📋 状態一覧")
@@ -137,4 +203,52 @@ display_cols = [
     "更新者",
     "更新日時",
 ]
-st.dataframe(df[display_cols], width="stretch")
+selection_event = None
+try:
+    selection_event = st.dataframe(
+        df[display_cols],
+        width="stretch",
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+    )
+except TypeError:
+    st.dataframe(df[display_cols], width="stretch")
+
+selected_row = _get_selected_row(selection_event, filtered_rows)
+
+if selected_row is None:
+    select_options = {
+        f"指示ID {row['order_id']} / 明細ID {row['line_id']} / 商品 {row['item_code']}": row
+        for row in filtered_rows
+    }
+    selected_label = st.selectbox(
+        "詳細確認対象",
+        options=[""] + list(select_options.keys()),
+        index=0,
+        placeholder="行を選んで監査ログへ進む",
+    )
+    if selected_label:
+        selected_row = select_options[selected_label]
+
+if selected_row is not None:
+    st.caption(
+        "選択中: "
+        f"指示ID {selected_row['order_id']} / 明細ID {selected_row['line_id']} / "
+        f"商品コード {_display_text(selected_row.get('item_code'))}"
+    )
+    action_cols = st.columns(3)
+    with action_cols[0]:
+        if st.button("監査ログで確認", type="primary"):
+            st.session_state["detail_target"] = _build_detail_target("audit_log", selected_row)
+            st.switch_page(DETAIL_PAGE_PATHS["audit_log"])
+    with action_cols[1]:
+        if _can_show_ship_confirm(selected_row):
+            if st.button("出荷確定へ"):
+                st.session_state["detail_target"] = _build_detail_target("ship_confirm", selected_row)
+                st.switch_page(DETAIL_PAGE_PATHS["ship_confirm"])
+    with action_cols[2]:
+        if _can_show_release(selected_row):
+            if st.button("引当解除へ"):
+                st.session_state["detail_target"] = _build_detail_target("release", selected_row)
+                st.switch_page(DETAIL_PAGE_PATHS["release"])
