@@ -80,12 +80,16 @@ def _competition_display_rows(rows):
 
 
 def _next_state_after_release_from_line(line: dict) -> str:
-    """解除後の数量から order_state_logs 用の state_code を決める（未出荷引当ベース）。"""
+    """解除後の数量から order_state_logs 用の state_code を決める（出荷実績優先）。"""
     req = float(line.get("qty_required") or 0)
     alloc = float(line.get("qty_allocated") or 0)
     ship = float(line.get("shipped_qty") or 0)
-    qty_unshipped = float(line.get("qty_unshipped", alloc - ship))
-    if qty_unshipped <= 1e-9:
+
+    if ship >= req and req > 0:
+        return "SHIPPED"
+    if ship > 0:
+        return "PARTIAL_SHIPPED"
+    if alloc <= 1e-9:
         return "RELEASED"
     if alloc < req - 1e-9:
         return "PARTIAL_ALLOCATED"
