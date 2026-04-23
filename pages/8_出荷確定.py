@@ -20,6 +20,7 @@ from core.db import (
 
 init_db()
 DETAIL_TARGET_PAGE = "ship_confirm"
+STATE_LIST_PAGE_PATH = "pages/11_状態一覧.py"
 
 SHIP_REASON_CODES = [
     "NORMAL_SHIPMENT",
@@ -30,6 +31,22 @@ SHIP_REASON_CODES = [
     "FIFO_EXCEPTION",
     "OTHER",
 ]
+
+
+def _set_return_focus(order_id, line_id, item_code=None, message=None):
+    st.session_state["return_focus_order_id"] = int(order_id)
+    st.session_state["return_focus_line_id"] = int(line_id)
+    st.session_state["return_focus_message"] = message or (
+        f"直前に操作した 指示ID {order_id} / 明細ID {line_id} を詳細確認対象に選択しています。"
+    )
+    if item_code:
+        st.session_state["return_focus_item_code"] = item_code
+
+
+def _show_state_list_return_button(message_key, button_key):
+    if st.button("状態一覧で再確認", key=button_key):
+        st.session_state.pop(message_key, None)
+        st.switch_page(STATE_LIST_PAGE_PATH)
 
 
 def _apply_detail_target(orders):
@@ -105,7 +122,14 @@ if st.session_state.get("a06_order_id") not in (None, order_id):
 
 if st.session_state.get("a06_success_message"):
     st.success(st.session_state.get("a06_success_message"))
-    st.session_state.pop("a06_success_message", None)
+    _show_state_list_return_button("a06_success_message", "a06_back_to_state_list")
+
+if st.session_state.get("ship_confirm_success_message"):
+    st.success(st.session_state.get("ship_confirm_success_message"))
+    _show_state_list_return_button(
+        "ship_confirm_success_message",
+        "ship_confirm_back_to_state_list",
+    )
 
 if st.session_state.get("ship_confirm_nav_warning"):
     st.info(st.session_state.get("ship_confirm_nav_warning"))
@@ -240,7 +264,13 @@ if manual_hold:
                 free_note="出荷確定画面から保留",
             )
             if ok:
-                st.success(msg)
+                _set_return_focus(
+                    order_id,
+                    row["line_id"],
+                    row.get("item_code"),
+                    f"出荷確定画面で保留保存した 指示ID {order_id} / 明細ID {row['line_id']} を詳細確認対象に選択しています。",
+                )
+                st.session_state["ship_confirm_success_message"] = msg
                 st.rerun()
 
 if st.button("出荷確定を実行", disabled=not has_unshipped, type="primary"):
@@ -295,10 +325,15 @@ if st.button("出荷確定を実行", disabled=not has_unshipped, type="primary"
         reason=reason_code or "OTHER",
     )
     if ok:
+        focus_line_id = None
+        focus_item_code = None
         for row in rows:
             requested = float(line_ship_qty_map.get(int(row["line_id"]), 0.0) or 0.0)
             if requested <= 0:
                 continue
+            if focus_line_id is None or int(row["line_id"]) == target_line_id:
+                focus_line_id = int(row["line_id"])
+                focus_item_code = row.get("item_code")
             state_code = "SHIPPED"
             if requested < float(row["qty_unshipped"]):
                 state_code = "PARTIAL_SHIPPED"
@@ -331,7 +366,14 @@ if st.button("出荷確定を実行", disabled=not has_unshipped, type="primary"
             reason_code=reason_code or None,
             free_note=(free_note or "").strip() or None,
         )
-        st.success(msg)
+        if focus_line_id is not None:
+            _set_return_focus(
+                order_id,
+                focus_line_id,
+                focus_item_code,
+                f"出荷確定した 指示ID {order_id} / 明細ID {focus_line_id} を詳細確認対象に選択しています。",
+            )
+        st.session_state["ship_confirm_success_message"] = msg
         st.rerun()
     else:
         st.error(msg)
@@ -416,6 +458,12 @@ if a06_order_id == order_id and a06_shortage_rows:
                         "debug_a06",
                     ]:
                         st.session_state.pop(k, None)
+                    _set_return_focus(
+                        order_id,
+                        lid,
+                        srow.get("item_code"),
+                        f"A-06対応でHOLD保存した 指示ID {order_id} / 明細ID {lid} を詳細確認対象に選択しています。",
+                    )
                     st.session_state["a06_success_message"] = "A-06対応でHOLD保存しました。引当管理でREALLOC_PENDINGへ進めてください。"
                     st.rerun()
                 else:

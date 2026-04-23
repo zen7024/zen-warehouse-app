@@ -19,6 +19,7 @@ from core.db import (
 
 init_db()
 DETAIL_TARGET_PAGE = "release"
+STATE_LIST_PAGE_PATH = "pages/11_状態一覧.py"
 
 RELEASE_REASON_CODES = [
     "CUSTOMER_CHANGE",
@@ -27,6 +28,21 @@ RELEASE_REASON_CODES = [
     "STOCK_DIFF",
     "OTHER",
 ]
+
+
+def _set_return_focus(order_id, line_id, item_code=None, message=None):
+    st.session_state["return_focus_order_id"] = int(order_id)
+    st.session_state["return_focus_line_id"] = int(line_id)
+    st.session_state["return_focus_message"] = message or (
+        f"直前に操作した 指示ID {order_id} / 明細ID {line_id} を詳細確認対象に選択しています。"
+    )
+    if item_code:
+        st.session_state["return_focus_item_code"] = item_code
+
+
+def _show_state_list_return_button(key):
+    if st.button("状態一覧で再確認", key=key):
+        st.switch_page(STATE_LIST_PAGE_PATH)
 
 
 def _apply_detail_target(orders):
@@ -175,6 +191,11 @@ if st.session_state.get("release_nav_message") and target_line_id is not None:
     st.info(st.session_state.get("release_nav_message"))
     st.session_state.pop("release_nav_message", None)
 
+if st.session_state.get("release_success_message"):
+    st.success(st.session_state.get("release_success_message"))
+    st.session_state.pop("release_success_message", None)
+    _show_state_list_return_button("release_back_to_state_list")
+
 if not rows:
     st.warning("この指示に明細がありません")
     st.stop()
@@ -317,7 +338,13 @@ for row in action_rows:
                     if not fin_ok:
                         st.error(fin_err or "解除後処理に失敗しました")
                     else:
-                        st.success(msg)
+                        _set_return_focus(
+                            order_id,
+                            lid,
+                            item,
+                            f"引当解除した 指示ID {order_id} / 明細ID {lid} を詳細確認対象に選択しています。",
+                        )
+                        st.session_state["release_success_message"] = msg
                         st.rerun()
                 else:
                     st.error(msg)
@@ -356,7 +383,13 @@ for row in action_rows:
                     if not fin_ok:
                         st.error(fin_err or "解除後処理に失敗しました")
                     else:
-                        st.success(msg)
+                        _set_return_focus(
+                            order_id,
+                            lid,
+                            item,
+                            f"引当解除した 指示ID {order_id} / 明細ID {lid} を詳細確認対象に選択しています。",
+                        )
+                        st.session_state["release_success_message"] = msg
                         st.rerun()
                 else:
                     st.error(msg)
