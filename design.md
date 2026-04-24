@@ -249,6 +249,42 @@
 - REJECTED
 - RESUBMIT_REQUIRED
 
+## 補足: state_service 化の暫定評価メモ
+
+現時点では、`state_service.py` を今すぐ新設する段階ではない。
+今回の試作では、状態一覧を業務判断ハブとして整えつつ、画面側の小さな文言調整と導線整理で十分に改善できる。
+
+### 1. 今の試作でできる
+- 状態一覧側で、状態ごとの導線表示を調整する
+- 文言、表示順、補助案内を改善する
+- 出荷確定 / 引当解除後の戻り導線を整える
+
+### 2. 少し足せばできる
+- 状態別文言を小さな辞書にまとめる
+- 導線ボタン文言を辞書化する
+- 表示列順を共通定義に近づける
+
+### 3. 共通基盤を作らないとできない
+- 出荷可否、解除可否、承認可否を全画面で完全統一する
+- 状態遷移の妥当性を一箇所で保証する
+- 画面外処理や API 化に対応する
+
+### 4. 本番向け設計として必要
+- `state_service.py`
+- `permission_service.py`
+- `audit_service.py`
+- `shipment_service.py`
+- `release_service.py`
+- PostgreSQL 前提のトランザクション管理
+- 状態遷移ルール表
+
+### 現時点の重複評価
+- 状態一覧の `_can_show_ship_confirm` / `_can_show_release` / `_operation_hint` は、UI 表示用の可否判定としてはまだ許容範囲
+- 出荷確定後の状態保存は `pages/8_出荷確定.py` 側にあり、引当解除後の次状態判定は `pages/9_引当解除.py` の `_next_state_after_release_from_line` に寄っている
+- `core/db.py` の `get_enhanced_order_lines` / `get_all_line_state_rows` / `save_line_state` が、数量事実と最新状態表示の共通土台になっている
+- ただし、状態判定・導線判定・操作可否判定がさらに増えるなら、次フェーズで service 層候補にする
+- 暫定判断としては、今すぐの共通化よりも、まず UX と導線の整備を優先する
+
 ## 6-3. 最低限必要な項目
 - `state_code`
 - `state_reason`

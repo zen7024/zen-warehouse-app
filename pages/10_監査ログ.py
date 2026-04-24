@@ -161,38 +161,38 @@ for row in rows:
     summary = summarize_audit_log_row(row)
     display_rows.append(
         {
-            "日時": _format_event_at(summary["event_at"]),
-            "イベント": get_event_label(summary["event_type"]),
-            "理由": get_reason_label(summary["reason_code"]),
-            "変更前": _truncate_text(summary["before_summary"], limit=48),
-            "変更後": _truncate_text(summary["after_summary"], limit=48),
-            "作業者": _display_text(summary["user_id"]),
+            "発生日時": _format_event_at(summary["event_at"]),
+            "イベント種別": get_event_label(summary["event_type"]),
             "指示ID": _display_text(summary["order_id"]),
             "明細ID": _display_text(summary["line_id"]),
             "商品コード": _display_text(summary["item_code"]),
             "ロケーション": _display_text(summary["location_code"]),
+            "理由": get_reason_label(summary["reason_code"]),
+            "作業者": _display_text(summary["user_id"]),
             "メモ": _truncate_text(summary["free_note"], limit=36),
+            "変更前要約": _truncate_text(summary["before_summary"], limit=44),
+            "変更後要約": _truncate_text(summary["after_summary"], limit=44),
         }
     )
 
 df = pd.DataFrame(display_rows)
 df = df[
     [
-        "日時",
-        "イベント",
-        "理由",
-        "変更前",
-        "変更後",
-        "作業者",
+        "発生日時",
+        "イベント種別",
         "指示ID",
         "明細ID",
         "商品コード",
         "ロケーション",
+        "理由",
+        "作業者",
         "メモ",
+        "変更前要約",
+        "変更後要約",
     ]
 ]
-st.dataframe(df, width="stretch")
-st.caption("一覧は要約を短縮表示しています。詳細は下部の JSON で確認できます。")
+st.dataframe(df, width="stretch", hide_index=True)
+st.caption("一覧は履歴確認向けに並び順を調整し、長文は短縮表示しています。詳細は下部の JSON で確認できます。")
 
 with st.expander("イベント別件数", expanded=False):
     count_df = (

@@ -59,6 +59,13 @@ def _format_event_at(value):
     return text.replace("T", " ")
 
 
+def _truncate_text(value, limit=40, default="-"):
+    text = _display_text(value, default=default)
+    if text == default:
+        return default
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def _approval_required_label(value):
     return "要" if int(value or 0) == 1 else "-"
 
@@ -80,22 +87,22 @@ def _operation_hint(row, operation):
     state_label = get_state_label(row.get("state_code"))
     qty_unshipped = float(row.get("qty_unshipped") or 0)
     if row.get("state_code") in OPERATION_HIDDEN_STATES:
-        return f"{state_label}のため対象外"
+        return f"{state_label}のため、この画面からは操作できません"
     if qty_unshipped <= 0:
-        return "未出荷数量がないため対象外"
+        return "未出荷数量がないため、この画面からは操作できません"
 
     if operation == "ship_confirm":
         if int(row.get("hold_flag") or 0) == 1:
-            return "保留中のため出荷確定不可"
+            return "保留理由を確認してから出荷確定へ進んでください"
         if row.get("approval_status") not in {"NOT_REQUIRED", "APPROVED"}:
-            return f"承認状態が{get_approval_label(row.get('approval_status'))}のため不可"
+            return f"承認状態が{get_approval_label(row.get('approval_status'))}のため、先に承認状況を確認してください"
         if row.get("state_code") not in SHIP_CONFIRM_ALLOWED_STATES:
-            return f"{state_label}は出荷確定対象外"
-        return "未出荷分があり出荷確定できます"
+            return f"{state_label}のため、まず履歴を確認してください"
+        return "未出荷分を確認してから出荷確定へ進んでください"
 
     if row.get("state_code") not in RELEASE_ALLOWED_STATES:
-        return f"{state_label}は引当解除対象外"
-    return "未出荷分の引当を解除できます"
+        return f"{state_label}のため、まず履歴を確認してください"
+    return "解除理由を確認してから引当解除へ進んでください"
 
 
 def _build_detail_target(page, row):
@@ -185,32 +192,32 @@ def _can_show_release(row):
 def _route_message(row):
     state_code = row.get("state_code")
     if state_code == "PARTIAL_SHIPPED":
-        return "一部出荷済みです。未出荷分が残っている場合は、出荷確定画面で続きを確認してください。"
+        return "一部出荷済みです。未出荷分があれば、出荷確定で続きを確認してください。"
     if state_code == "ALLOCATED":
-        return "引当済みです。出荷確定へ進めます。"
+        return "引当済みです。まず出荷確定を確認してください。"
     if state_code == "PARTIAL_ALLOCATED":
-        return "一部引当です。不足や保留理由を確認し、必要に応じて監査ログまたは引当解除を確認してください。"
+        return "一部引当です。まず監査ログで不足理由を確認してください。"
     if state_code == "HOLD":
-        return "保留中です。まず監査ログで理由と履歴を確認してください。"
+        return "保留中です。まず監査ログで理由を確認してください。"
     if state_code == "REALLOC_PENDING":
-        return "再引当待ちです。引当解除や再配分の履歴を確認してください。"
+        return "再引当待ちです。まず引当解除または再配分履歴を確認してください。"
     if state_code == "SHIPPED":
-        return "出荷完了済みです。操作ではなく履歴確認が中心です。"
+        return "出荷完了済みです。必要に応じて監査ログを確認してください。"
     if state_code == "RELEASED":
-        return "引当解除済みです。必要に応じて解除履歴を確認してください。"
+        return "引当解除済みです。解除履歴は監査ログで確認してください。"
     if state_code == "UNALLOCATED":
-        return "未引当です。出荷確定や引当解除の対象外です。"
+        return "未引当です。まず引当状況を確認してください。"
     if state_code in {"SENT_BACK", "CANCELLED"}:
-        return "差戻しまたはキャンセル状態です。操作前に履歴を確認してください。"
-    return "状態と履歴を確認し、必要に応じて次の操作へ進んでください。"
+        return "差戻しまたはキャンセル状態です。まず監査ログを確認してください。"
+    return "まず履歴を確認し、必要に応じて次の操作へ進んでください。"
 
 
 def _route_priority(row):
     state_code = row.get("state_code")
     if state_code == "PARTIAL_SHIPPED":
-        return ["ship_confirm", "audit_log"]
+        return ["ship_confirm", "release", "audit_log"]
     if state_code == "ALLOCATED":
-        return ["ship_confirm", "audit_log"]
+        return ["ship_confirm", "release", "audit_log"]
     if state_code == "PARTIAL_ALLOCATED":
         return ["audit_log", "release"]
     if state_code == "HOLD":
@@ -245,8 +252,21 @@ def _visible_routes(row):
 
 def _route_caption(row, route):
     if route == "audit_log":
-        return "選択明細の監査ログを確認できます"
+        return "変更理由と履歴を監査ログで確認してください"
     return _operation_hint(row, route)
+
+
+def _history_note(history_row):
+    parts = []
+    hold_reason = _display_text(history_row.get("hold_reason"))
+    free_note = _display_text(history_row.get("free_note"))
+    if hold_reason != "-":
+        parts.append(f"保留理由: {hold_reason}")
+    if free_note != "-":
+        parts.append(f"メモ: {free_note}")
+    if not parts:
+        return "-"
+    return _truncate_text(" / ".join(parts), limit=48)
 
 
 def _render_route_button(row, route, primary=False):
@@ -454,10 +474,11 @@ if selected_row is None:
     if focus_row is not None:
         st.info(
             st.session_state.get("return_focus_message")
-            or "直前操作した明細があります。詳細確認対象に選択しています。"
+            or "直前に操作した明細を表示しています。状態と履歴を確認してください。"
         )
     elif st.session_state.get("return_focus_line_id") is not None:
-        st.info("直前操作した明細がありますが、現在の絞り込み結果には含まれていません。")
+        st.info("直前に操作した明細は、現在の絞り込み条件では表示されていません。")
+        st.caption("絞り込み条件を変更すると確認できます。")
         if len(filtered_rows) > 1:
             st.caption("詳細確認対象を選ぶと、状態履歴と操作導線が表示されます。")
     elif len(filtered_rows) == 1:
@@ -482,7 +503,7 @@ if selected_row is not None:
         f"商品コード {_display_text(selected_row.get('item_code'))}"
     )
     st.subheader("状態履歴")
-    history_rows = get_line_state_history(selected_row["line_id"])
+    history_rows = [dict(row) for row in get_line_state_history(selected_row["line_id"])]
     if not history_rows:
         st.info(
             "この明細には明示的な状態履歴がまだありません。"
@@ -490,6 +511,8 @@ if selected_row is not None:
             "数量事実から現在状態を推定して表示している可能性があります。"
         )
     else:
+        latest_changed_at = _format_event_at(history_rows[0]["changed_at"])
+        st.caption(f"履歴件数: {len(history_rows)}件 / 最新履歴: {latest_changed_at}")
         history_display_rows = []
         for history_row in history_rows:
             history_display_rows.append(
@@ -497,30 +520,24 @@ if selected_row is not None:
                     "更新日時": _format_event_at(history_row["changed_at"]),
                     "状態": get_state_label(history_row["state_code"]),
                     "状態理由": get_reason_label(history_row["state_reason"]),
-                    "自由記述": _display_text(history_row["free_note"]),
                     "保留": "はい" if int(history_row["hold_flag"] or 0) == 1 else "-",
-                    "保留理由": _display_text(history_row["hold_reason"]),
-                    "承認要否": _approval_required_label(history_row["approval_required"]),
                     "承認状態": get_approval_label(history_row["approval_status"]),
-                    "影響案件数": int(history_row["impact_order_count"] or 0),
                     "更新者": _display_text(history_row["changed_by"]),
+                    "メモ": _history_note(history_row),
                 }
             )
         history_df = pd.DataFrame(history_display_rows)
-        st.caption("新しい履歴から順に表示しています。長い理由や自由記述は列内で確認できます。")
+        st.caption("新しい履歴から順に表示しています。メモは一覧向けに短縮表示しています。")
         st.dataframe(
             history_df[
                 [
                     "更新日時",
                     "状態",
                     "状態理由",
-                    "自由記述",
                     "保留",
-                    "保留理由",
-                    "承認要否",
                     "承認状態",
-                    "影響案件数",
                     "更新者",
+                    "メモ",
                 ]
             ],
             width="stretch",
@@ -529,12 +546,10 @@ if selected_row is not None:
                 "更新日時": st.column_config.TextColumn(width="medium"),
                 "状態": st.column_config.TextColumn(width="small"),
                 "状態理由": st.column_config.TextColumn(width="medium"),
-                "自由記述": st.column_config.TextColumn(width="large"),
-                "保留理由": st.column_config.TextColumn(width="medium"),
-                "承認要否": st.column_config.TextColumn(width="small"),
+                "保留": st.column_config.TextColumn(width="small"),
                 "承認状態": st.column_config.TextColumn(width="small"),
-                "影響案件数": st.column_config.NumberColumn(width="small"),
                 "更新者": st.column_config.TextColumn(width="small"),
+                "メモ": st.column_config.TextColumn(width="large"),
             },
         )
     st.info(_route_message(selected_row))

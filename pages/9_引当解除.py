@@ -34,7 +34,7 @@ def _set_return_focus(order_id, line_id, item_code=None, message=None):
     st.session_state["return_focus_order_id"] = int(order_id)
     st.session_state["return_focus_line_id"] = int(line_id)
     st.session_state["return_focus_message"] = message or (
-        f"直前に操作した 指示ID {order_id} / 明細ID {line_id} を詳細確認対象に選択しています。"
+        f"直前に操作した 指示ID {order_id} / 明細ID {line_id} を表示しています。状態と履歴を確認してください。"
     )
     if item_code:
         st.session_state["return_focus_item_code"] = item_code
@@ -342,9 +342,9 @@ for row in action_rows:
                             order_id,
                             lid,
                             item,
-                            f"引当解除した 指示ID {order_id} / 明細ID {lid} を詳細確認対象に選択しています。",
+                            f"引当解除した 指示ID {order_id} / 明細ID {lid} を表示しています。状態と履歴を確認してください。",
                         )
-                        st.session_state["release_success_message"] = msg
+                        st.session_state["release_success_message"] = "引当解除しました。状態一覧で解除後の状態を確認してください。"
                         st.rerun()
                 else:
                     st.error(msg)
@@ -387,9 +387,9 @@ for row in action_rows:
                             order_id,
                             lid,
                             item,
-                            f"引当解除した 指示ID {order_id} / 明細ID {lid} を詳細確認対象に選択しています。",
+                            f"引当解除した 指示ID {order_id} / 明細ID {lid} を表示しています。状態と履歴を確認してください。",
                         )
-                        st.session_state["release_success_message"] = msg
+                        st.session_state["release_success_message"] = "引当解除しました。状態一覧で解除後の状態を確認してください。"
                         st.rerun()
                 else:
                     st.error(msg)

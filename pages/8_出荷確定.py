@@ -37,7 +37,7 @@ def _set_return_focus(order_id, line_id, item_code=None, message=None):
     st.session_state["return_focus_order_id"] = int(order_id)
     st.session_state["return_focus_line_id"] = int(line_id)
     st.session_state["return_focus_message"] = message or (
-        f"直前に操作した 指示ID {order_id} / 明細ID {line_id} を詳細確認対象に選択しています。"
+        f"直前に操作した 指示ID {order_id} / 明細ID {line_id} を表示しています。状態と履歴を確認してください。"
     )
     if item_code:
         st.session_state["return_focus_item_code"] = item_code
@@ -268,9 +268,9 @@ if manual_hold:
                     order_id,
                     row["line_id"],
                     row.get("item_code"),
-                    f"出荷確定画面で保留保存した 指示ID {order_id} / 明細ID {row['line_id']} を詳細確認対象に選択しています。",
+                    f"出荷確定画面で保留保存した 指示ID {order_id} / 明細ID {row['line_id']} を表示しています。状態と履歴を確認してください。",
                 )
-                st.session_state["ship_confirm_success_message"] = msg
+                st.session_state["ship_confirm_success_message"] = "保留保存しました。状態一覧で反映結果を確認してください。"
                 st.rerun()
 
 if st.button("出荷確定を実行", disabled=not has_unshipped, type="primary"):
@@ -371,9 +371,9 @@ if st.button("出荷確定を実行", disabled=not has_unshipped, type="primary"
                 order_id,
                 focus_line_id,
                 focus_item_code,
-                f"出荷確定した 指示ID {order_id} / 明細ID {focus_line_id} を詳細確認対象に選択しています。",
+                f"出荷確定した 指示ID {order_id} / 明細ID {focus_line_id} を表示しています。状態と履歴を確認してください。",
             )
-        st.session_state["ship_confirm_success_message"] = msg
+        st.session_state["ship_confirm_success_message"] = "出荷確定しました。状態一覧で反映結果を確認してください。"
         st.rerun()
     else:
         st.error(msg)
@@ -462,9 +462,9 @@ if a06_order_id == order_id and a06_shortage_rows:
                         order_id,
                         lid,
                         srow.get("item_code"),
-                        f"A-06対応でHOLD保存した 指示ID {order_id} / 明細ID {lid} を詳細確認対象に選択しています。",
+                        f"A-06対応でHOLD保存した 指示ID {order_id} / 明細ID {lid} を表示しています。状態と履歴を確認してください。",
                     )
-                    st.session_state["a06_success_message"] = "A-06対応でHOLD保存しました。引当管理でREALLOC_PENDINGへ進めてください。"
+                    st.session_state["a06_success_message"] = "A-06対応でHOLD保存しました。状態一覧で反映結果を確認してください。"
                     st.rerun()
                 else:
                     st.error("HOLD保存に失敗しました。debug_a06を確認してください。")
