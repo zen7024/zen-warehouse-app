@@ -40,6 +40,11 @@ OPERATION_HIDDEN_STATES = {
     "SENT_BACK",
     "CANCELLED",
 }
+ROUTE_BUTTON_LABELS = {
+    "audit_log": "監査ログで履歴確認",
+    "ship_confirm": "出荷確定で確認",
+    "release": "引当解除で確認",
+}
 
 
 def _display_text(value, default="-"):
@@ -175,6 +180,83 @@ def _can_show_release(row):
         and float(row.get("qty_unshipped") or 0) > 0
         and row.get("state_code") in RELEASE_ALLOWED_STATES
     )
+
+
+def _route_message(row):
+    state_code = row.get("state_code")
+    if state_code == "PARTIAL_SHIPPED":
+        return "一部出荷済みです。未出荷分が残っている場合は、出荷確定画面で続きを確認してください。"
+    if state_code == "ALLOCATED":
+        return "引当済みです。出荷確定へ進めます。"
+    if state_code == "PARTIAL_ALLOCATED":
+        return "一部引当です。不足や保留理由を確認し、必要に応じて監査ログまたは引当解除を確認してください。"
+    if state_code == "HOLD":
+        return "保留中です。まず監査ログで理由と履歴を確認してください。"
+    if state_code == "REALLOC_PENDING":
+        return "再引当待ちです。引当解除や再配分の履歴を確認してください。"
+    if state_code == "SHIPPED":
+        return "出荷完了済みです。操作ではなく履歴確認が中心です。"
+    if state_code == "RELEASED":
+        return "引当解除済みです。必要に応じて解除履歴を確認してください。"
+    if state_code == "UNALLOCATED":
+        return "未引当です。出荷確定や引当解除の対象外です。"
+    if state_code in {"SENT_BACK", "CANCELLED"}:
+        return "差戻しまたはキャンセル状態です。操作前に履歴を確認してください。"
+    return "状態と履歴を確認し、必要に応じて次の操作へ進んでください。"
+
+
+def _route_priority(row):
+    state_code = row.get("state_code")
+    if state_code == "PARTIAL_SHIPPED":
+        return ["ship_confirm", "audit_log"]
+    if state_code == "ALLOCATED":
+        return ["ship_confirm", "audit_log"]
+    if state_code == "PARTIAL_ALLOCATED":
+        return ["audit_log", "release"]
+    if state_code == "HOLD":
+        return ["audit_log", "release"]
+    if state_code == "REALLOC_PENDING":
+        return ["release", "audit_log"]
+    if state_code in {"SHIPPED", "RELEASED", "UNALLOCATED", "SENT_BACK", "CANCELLED"}:
+        return ["audit_log"]
+    return ["audit_log", "ship_confirm", "release"]
+
+
+def _available_routes(row):
+    routes = ["audit_log"]
+    if _can_show_ship_confirm(row):
+        routes.append("ship_confirm")
+    if _can_show_release(row):
+        routes.append("release")
+    return routes
+
+
+def _ordered_routes(row):
+    preferred = _route_priority(row)
+    available = _available_routes(row)
+    ordered = [route for route in preferred if route in available]
+    ordered.extend(route for route in available if route not in ordered)
+    return ordered
+
+
+def _visible_routes(row):
+    return _ordered_routes(row)[:2]
+
+
+def _route_caption(row, route):
+    if route == "audit_log":
+        return "選択明細の監査ログを確認できます"
+    return _operation_hint(row, route)
+
+
+def _render_route_button(row, route, primary=False):
+    button_kwargs = {"key": f"state_list_route_{route}_{int(row['line_id'])}"}
+    if primary:
+        button_kwargs["type"] = "primary"
+    if st.button(ROUTE_BUTTON_LABELS[route], **button_kwargs):
+        st.session_state["detail_target"] = _build_detail_target(route, row)
+        st.switch_page(DETAIL_PAGE_PATHS[route])
+    st.caption(_route_caption(row, route))
 
 
 st.title("📋 状態一覧")
@@ -455,21 +537,9 @@ if selected_row is not None:
                 "更新者": st.column_config.TextColumn(width="small"),
             },
         )
-    action_cols = st.columns(3)
-    with action_cols[0]:
-        if st.button("監査ログで確認", type="primary"):
-            st.session_state["detail_target"] = _build_detail_target("audit_log", selected_row)
-            st.switch_page(DETAIL_PAGE_PATHS["audit_log"])
-        st.caption("選択明細の監査ログを確認できます")
-    with action_cols[1]:
-        if _can_show_ship_confirm(selected_row):
-            if st.button("出荷確定へ"):
-                st.session_state["detail_target"] = _build_detail_target("ship_confirm", selected_row)
-                st.switch_page(DETAIL_PAGE_PATHS["ship_confirm"])
-        st.caption(_operation_hint(selected_row, "ship_confirm"))
-    with action_cols[2]:
-        if _can_show_release(selected_row):
-            if st.button("引当解除へ"):
-                st.session_state["detail_target"] = _build_detail_target("release", selected_row)
-                st.switch_page(DETAIL_PAGE_PATHS["release"])
-        st.caption(_operation_hint(selected_row, "release"))
+    st.info(_route_message(selected_row))
+    visible_routes = _visible_routes(selected_row)
+    action_cols = st.columns(max(len(visible_routes), 1))
+    for idx, route in enumerate(visible_routes):
+        with action_cols[idx]:
+            _render_route_button(selected_row, route, primary=(idx == 0))
