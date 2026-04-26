@@ -45,6 +45,17 @@ def _show_state_list_return_button(key):
         st.switch_page(STATE_LIST_PAGE_PATH)
 
 
+def _build_release_success_message(order_id, line_id, item_code=None, released_qty=None):
+    item_part = f" / 商品コード {item_code}" if item_code else ""
+    qty_part = f" / 解除数量 {released_qty:g}" if released_qty is not None else ""
+    return (
+        f"引当解除しました。直前に解除した対象は 指示ID {order_id} / 明細ID {line_id}"
+        f"{item_part}{qty_part} です。"
+        "この対象は解除可能一覧から外れる場合があります。"
+        "状態一覧または監査ログで履歴を確認してください。"
+    )
+
+
 def _apply_detail_target(orders):
     target = st.session_state.get("detail_target")
     if not target or target.get("target_page") != DETAIL_TARGET_PAGE:
@@ -155,6 +166,10 @@ def _finalize_release_and_audit(
 st.title("🔓 引当解除（P0最小共通基盤版）")
 st.write("未出荷引当だけを解除し、理由・承認・影響表示を載せます。")
 
+if st.session_state.get("release_success_message"):
+    st.success(st.session_state.get("release_success_message"))
+    _show_state_list_return_button("release_back_to_state_list")
+
 orders = list_orders_with_releasable_allocations()
 if not orders:
     st.info("解除可能な未出荷引当を含む出荷指示はありません。")
@@ -190,10 +205,6 @@ if st.session_state.get("release_nav_warning"):
 if st.session_state.get("release_nav_message") and target_line_id is not None:
     st.info(st.session_state.get("release_nav_message"))
     st.session_state.pop("release_nav_message", None)
-
-if st.session_state.get("release_success_message"):
-    st.success(st.session_state.get("release_success_message"))
-    _show_state_list_return_button("release_back_to_state_list")
 
 if not rows:
     st.warning("この指示に明細がありません")
@@ -343,7 +354,12 @@ for row in action_rows:
                             item,
                             f"引当解除した 指示ID {order_id} / 明細ID {lid} を表示しています。状態と履歴を確認してください。",
                         )
-                        st.session_state["release_success_message"] = "引当解除しました。状態一覧で解除後の状態を確認してください。"
+                        st.session_state["release_success_message"] = _build_release_success_message(
+                            order_id,
+                            lid,
+                            item,
+                            qty_in,
+                        )
                         st.rerun()
                 else:
                     st.error(msg)
@@ -388,7 +404,12 @@ for row in action_rows:
                             item,
                             f"引当解除した 指示ID {order_id} / 明細ID {lid} を表示しています。状態と履歴を確認してください。",
                         )
-                        st.session_state["release_success_message"] = "引当解除しました。状態一覧で解除後の状態を確認してください。"
+                        st.session_state["release_success_message"] = _build_release_success_message(
+                            order_id,
+                            lid,
+                            item,
+                            releasable,
+                        )
                         st.rerun()
                 else:
                     st.error(msg)
