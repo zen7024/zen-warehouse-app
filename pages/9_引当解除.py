@@ -193,7 +193,6 @@ if st.session_state.get("release_nav_message") and target_line_id is not None:
 
 if st.session_state.get("release_success_message"):
     st.success(st.session_state.get("release_success_message"))
-    st.session_state.pop("release_success_message", None)
     _show_state_list_return_button("release_back_to_state_list")
 
 if not rows:
