@@ -91,13 +91,11 @@ with st.expander("検索条件", expanded=True):
     with c2:
         order_id_text = st.text_input(
             "指示ID",
-            value=st.session_state.get("audit_log_order_id_text", ""),
             placeholder="例: 1001",
             key="audit_log_order_id_text",
         )
         line_id_text = st.text_input(
             "明細ID",
-            value=st.session_state.get("audit_log_line_id_text", ""),
             placeholder="例: 2001",
             key="audit_log_line_id_text",
         )
