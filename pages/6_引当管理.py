@@ -17,6 +17,8 @@ from core.db import (
     log_audit_event,
     build_alloc_status,
     get_order_competition_by_item,
+    STATE,
+    update_line_state,
 )
 
 init_db()
@@ -302,6 +304,7 @@ if snap:
                 "引当済": float(r["qty_allocated"]),
                 "未引当": float(r["qty_pending"]),
                 "引当状態": build_alloc_status(r["qty_required"], r["qty_allocated"]),
+                "業務状態": STATE.get(update_line_state(float(r["qty_required"]), float(r["qty_allocated"]), 0, 0), "-"),
             }
         )
     st.dataframe(pd.DataFrame(snap_rows), use_container_width=True)

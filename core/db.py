@@ -51,6 +51,31 @@ APPROVAL_LABELS = {
     "REJECTED": "却下",
 }
 
+STATE = {
+    "LINE_OPEN": "未着手",
+    "LINE_PARTIALLY_ALLOCATED": "一部引当",
+    "LINE_ALLOCATED": "引当済",
+    "LINE_PARTIALLY_SHIPPED": "一部出荷",
+    "LINE_SHIPPED": "出荷完了",
+    "LINE_HOLD": "保留",
+    "LINE_CANCELLED": "キャンセル",
+}
+
+
+def update_line_state(qty_required, qty_allocated, shipped_qty, hold_flag):
+    if hold_flag:
+        return "LINE_HOLD"
+    if shipped_qty >= qty_required - 1e-9:
+        return "LINE_SHIPPED"
+    if shipped_qty > 1e-9:
+        return "LINE_PARTIALLY_SHIPPED"
+    if qty_allocated >= qty_required - 1e-9:
+        return "LINE_ALLOCATED"
+    if qty_allocated > 1e-9:
+        return "LINE_PARTIALLY_ALLOCATED"
+    return "LINE_OPEN"
+
+
 EVENT_LABELS = {
     "ALLOCATE": "引当実行",
     "SHIP_CONFIRM": "出荷確定",
@@ -158,6 +183,18 @@ def init_db():
             cur.execute(
                 "ALTER TABLE order_lines ADD COLUMN shipped_qty REAL NOT NULL DEFAULT 0"
             )
+        if ol_cols and "state_code" not in ol_cols:
+            cur.execute(
+                "ALTER TABLE order_lines ADD COLUMN state_code TEXT DEFAULT 'LINE_OPEN'"
+            )
+        if ol_cols and "state_reason" not in ol_cols:
+            cur.execute("ALTER TABLE order_lines ADD COLUMN state_reason TEXT")
+        if ol_cols and "hold_flag" not in ol_cols:
+            cur.execute(
+                "ALTER TABLE order_lines ADD COLUMN hold_flag INTEGER DEFAULT 0"
+            )
+        if ol_cols and "updated_at" not in ol_cols:
+            cur.execute("ALTER TABLE order_lines ADD COLUMN updated_at TEXT")
 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS order_state_logs (
@@ -538,11 +575,14 @@ def create_order_with_lines(reference, note, line_items):
                 need -= take
 
             alloc = req - need
+            line_state = update_line_state(req, alloc, 0, 0)
+            line_updated_at = datetime.now().isoformat(timespec="seconds")
 
             cur.execute("""
-            INSERT INTO order_lines (order_id, item_code, qty_required, qty_allocated)
-            VALUES (?, ?, ?, ?)
-            """, (order_id, item_code, req, alloc))
+            INSERT INTO order_lines
+                (order_id, item_code, qty_required, qty_allocated, state_code, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, (order_id, item_code, req, alloc, line_state, line_updated_at))
             line_id = cur.lastrowid
 
             for loc, take in details_to_insert:
@@ -691,7 +731,8 @@ def confirm_shipment_for_order(order_id, line_ship_qty_map=None, operator=None, 
         order_ref = orow["reference"]
 
         cur.execute("""
-        SELECT line_id, item_code, qty_allocated, shipped_qty
+        SELECT line_id, item_code, qty_required, qty_allocated, shipped_qty,
+               COALESCE(hold_flag, 0) AS hold_flag
         FROM order_lines
         WHERE order_id = ? AND qty_allocated > shipped_qty
         ORDER BY line_id
@@ -716,8 +757,10 @@ def confirm_shipment_for_order(order_id, line_ship_qty_map=None, operator=None, 
         for line in pending:
             line_id = line["line_id"]
             item_code = line["item_code"]
+            qty_req = float(line["qty_required"])
             qty_alloc = float(line["qty_allocated"])
             shipped_line = float(line["shipped_qty"])
+            hold_flag = int(line["hold_flag"] or 0)
             to_ship_line = qty_alloc - shipped_line
             if to_ship_line <= 0:
                 continue
@@ -804,9 +847,11 @@ def confirm_shipment_for_order(order_id, line_ship_qty_map=None, operator=None, 
                         [],
                     )
 
+                new_shipped = shipped_line + requested
+                new_state = update_line_state(qty_req, qty_alloc, new_shipped, hold_flag)
                 cur.execute(
-                    "UPDATE order_lines SET shipped_qty = ? WHERE line_id = ?",
-                    (shipped_line + requested, line_id),
+                    "UPDATE order_lines SET shipped_qty = ?, state_code = ?, updated_at = ? WHERE line_id = ?",
+                    (new_shipped, new_state, datetime.now().isoformat(timespec="seconds"), line_id),
                 )
             else:
                 cur.execute("""
@@ -836,9 +881,11 @@ def confirm_shipment_for_order(order_id, line_ship_qty_map=None, operator=None, 
                     tx_time,
                     None,
                 ))
+                new_shipped2 = shipped_line + requested
+                new_state2 = update_line_state(qty_req, qty_alloc, new_shipped2, hold_flag)
                 cur.execute(
-                    "UPDATE order_lines SET shipped_qty = ? WHERE line_id = ?",
-                    (shipped_line + requested, line_id),
+                    "UPDATE order_lines SET shipped_qty = ?, state_code = ?, updated_at = ? WHERE line_id = ?",
+                    (new_shipped2, new_state2, datetime.now().isoformat(timespec="seconds"), line_id),
                 )
                 summary.append({
                     "line_id": line_id,
@@ -899,7 +946,8 @@ def release_allocation_for_line(
             l.item_code,
             l.qty_required,
             l.qty_allocated,
-            l.shipped_qty
+            l.shipped_qty,
+            COALESCE(l.hold_flag, 0) AS hold_flag
         FROM order_lines l
         JOIN orders o ON o.order_id = l.order_id
         WHERE l.line_id = ?
@@ -911,8 +959,10 @@ def release_allocation_for_line(
         order_id = line["order_id"]
         order_ref = line["reference"]
         item_code = line["item_code"]
+        qty_req = float(line["qty_required"])
         qty_alloc = float(line["qty_allocated"])
         shipped = float(line["shipped_qty"])
+        hold_flag = int(line["hold_flag"] or 0)
         releasable = qty_alloc - shipped
 
         if rq > releasable + 1e-6:
@@ -979,9 +1029,10 @@ def release_allocation_for_line(
             conn.rollback()
             return False, "整合性エラー: 引当済が出荷済を下回るため中止しました"
 
+        released_state = update_line_state(qty_req, new_alloc, shipped, hold_flag)
         cur.execute(
-            "UPDATE order_lines SET qty_allocated = ? WHERE line_id = ?",
-            (new_alloc, line_id),
+            "UPDATE order_lines SET qty_allocated = ?, state_code = ?, updated_at = ? WHERE line_id = ?",
+            (new_alloc, released_state, datetime.now().isoformat(timespec="seconds"), line_id),
         )
         conn.commit()
 

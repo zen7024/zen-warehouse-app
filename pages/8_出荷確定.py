@@ -16,6 +16,8 @@ from core.db import (
     get_state_label,
     save_line_state,
     log_audit_event,
+    STATE,
+    update_line_state,
 )
 
 init_db()
@@ -165,6 +167,15 @@ if "state_code" in df.columns:
     df["state_code"] = df["state_code"].map(get_state_label)
 if "approval_status" in df.columns:
     df["approval_status"] = df["approval_status"].map(get_approval_label)
+df["業務状態"] = df.apply(
+    lambda r: STATE.get(update_line_state(
+        float(r.get("qty_required") or 0),
+        float(r.get("qty_allocated") or 0),
+        float(r.get("shipped_qty") or 0),
+        int(r.get("hold_flag") or 0),
+    ), "-"),
+    axis=1,
+)
 df = df.rename(
     columns={
         "line_id": "明細ID",
@@ -185,7 +196,7 @@ df = df.rename(
 )
 show_cols = [
     "明細ID", "商品コード", "必要数", "引当済数量", "出荷済数量", "未出荷数量",
-    "状態", "状態理由", "承認要否", "承認状態", "保留", "影響案件数"
+    "業務状態", "状態", "状態理由", "承認要否", "承認状態", "保留", "影響案件数"
 ]
 st.dataframe(df[show_cols], use_container_width=True)
 
