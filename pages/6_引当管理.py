@@ -33,7 +33,7 @@ with st.expander("現在庫サマリ（商品コード合計）", expanded=False
     phys = get_physical_stock_by_item()
     if phys:
         summary = [{"商品コード": k, "現物在庫計": v} for k, v in sorted(phys.items())]
-        st.dataframe(pd.DataFrame(summary), width="stretch")
+        st.dataframe(pd.DataFrame(summary), use_container_width=True)
     else:
         st.info("在庫トランザクションから集計できる現物在庫はまだありません")
 
@@ -139,7 +139,7 @@ def render_order_state_section(order_id: int, title: str, key_prefix: str, opera
         "状態", "状態理由", "影響案件数", "承認要否", "承認状態",
         "更新者", "更新日時"
     ]
-    st.dataframe(df_latest[show_cols], width="stretch")
+    st.dataframe(df_latest[show_cols], use_container_width=True)
 
     st.caption("必要に応じて状態だけ手動更新")
     reason_options = [""] + list(get_reason_options().keys())
@@ -304,7 +304,7 @@ if snap:
                 "引当状態": build_alloc_status(r["qty_required"], r["qty_allocated"]),
             }
         )
-    st.dataframe(pd.DataFrame(snap_rows), width="stretch")
+    st.dataframe(pd.DataFrame(snap_rows), use_container_width=True)
     codes = st.session_state.get("last_alloc_item_codes") or []
     if codes:
         with st.expander("同一商品の案件競合一覧（直近登録に含まれる商品）", expanded=False):
@@ -316,7 +316,7 @@ if snap:
                 if not disp:
                     st.info("該当する出荷明細がありません。")
                 else:
-                    st.dataframe(pd.DataFrame(disp), width="stretch")
+                    st.dataframe(pd.DataFrame(disp), use_container_width=True)
 
 st.subheader("既存出荷指示の状態更新")
 order_rows = list_orders_for_ship_confirm()
@@ -362,7 +362,7 @@ if order_rows:
                     "qty_unshipped": "未出荷数量",
                 }
             )
-            st.dataframe(df_line_ad[["明細ID", "商品コード", "ロケーション", "引当済数量", "出荷済数量", "未出荷数量"]], width="stretch")
+            st.dataframe(df_line_ad[["明細ID", "商品コード", "ロケーション", "引当済数量", "出荷済数量", "未出荷数量"]], use_container_width=True)
 
             from_candidates = [
                 r["location_code"]
@@ -473,6 +473,6 @@ if rows:
         "未出荷引当",
         "引当状態",
     ]
-    st.dataframe(df_hist[hist_cols], width="stretch")
+    st.dataframe(df_hist[hist_cols], use_container_width=True)
 else:
     st.info("まだ引当明細はありません")

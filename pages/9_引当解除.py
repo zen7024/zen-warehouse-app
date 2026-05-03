@@ -254,7 +254,7 @@ show_cols = [
     "明細ID", "商品コード", "必要数", "引当済数量", "出荷済数量",
     "未出荷数量", "状態", "状態理由", "承認要否", "承認状態", "解除後影響案件数", "更新者"
 ]
-st.dataframe(df[show_cols], width="stretch")
+st.dataframe(df[show_cols], use_container_width=True)
 
 st.divider()
 st.subheader("解除操作")
@@ -285,7 +285,7 @@ for row in action_rows:
         if not disp:
             st.info("この商品コードの出荷明細はまだありません。")
         else:
-            st.dataframe(pd.DataFrame(disp), width="stretch")
+            st.dataframe(pd.DataFrame(disp), use_container_width=True)
     c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.0, 1.0])
     with c1:
         qty_in = st.number_input(
@@ -434,6 +434,6 @@ if release_logs:
                 "自由記述": r["free_note"] or "",
             }
         )
-    st.dataframe(pd.DataFrame(log_rows), width="stretch")
+    st.dataframe(pd.DataFrame(log_rows), use_container_width=True)
 else:
     st.info("解除履歴はまだありません。")

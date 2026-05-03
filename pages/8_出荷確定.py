@@ -187,7 +187,7 @@ show_cols = [
     "明細ID", "商品コード", "必要数", "引当済数量", "出荷済数量", "未出荷数量",
     "状態", "状態理由", "承認要否", "承認状態", "保留", "影響案件数"
 ]
-st.dataframe(df[show_cols], width="stretch")
+st.dataframe(df[show_cols], use_container_width=True)
 
 ad_rows = get_allocation_details_for_order(order_id)
 if ad_rows:
@@ -203,7 +203,7 @@ if ad_rows:
                 "qty_unshipped": "未出荷数量",
             }
         )
-        st.dataframe(df_ad, width="stretch")
+        st.dataframe(df_ad, use_container_width=True)
 else:
     st.info("この指示にはロケーション別引当明細がありません（旧形式）。")
 
@@ -401,7 +401,7 @@ if a06_order_id == order_id and a06_shortage_rows:
     )
     st.dataframe(
         df_shortage[["不足明細ID", "商品コード", "不足ロケ", "必要数", "現在庫", "不足数"]],
-        width="stretch",
+        use_container_width=True,
     )
 
     line_meta = {int(r["line_id"]): dict(r) for r in rows}
@@ -511,6 +511,6 @@ if ship_logs:
                 "自由記述": r["free_note"] or "",
             }
         )
-    st.dataframe(pd.DataFrame(log_rows), width="stretch")
+    st.dataframe(pd.DataFrame(log_rows), use_container_width=True)
 else:
     st.info("出荷履歴はまだありません。")

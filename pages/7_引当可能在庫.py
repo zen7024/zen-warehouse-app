@@ -70,7 +70,7 @@ if rows:
     col1.metric("商品コード数", len(df))
     col2.metric("引当可能合計", f"{df['引当可能在庫'].replace('-', 0).astype(float).sum():g}")
     col3.metric("未出荷引当合計", f"{df['未出荷引当'].replace('-', 0).astype(float).sum():g}")
-    st.dataframe(df, width="stretch")
+    st.dataframe(df, use_container_width=True)
 
     log_audit_event(
         event_type="VIEW_ALLOCATABLE_STOCK",
@@ -99,4 +99,4 @@ else:
     if not disp:
         st.info("この商品コードの出荷明細はまだありません。")
     else:
-        st.dataframe(pd.DataFrame(disp), width="stretch")
+        st.dataframe(pd.DataFrame(disp), use_container_width=True)

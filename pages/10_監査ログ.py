@@ -191,7 +191,7 @@ df = df[
         "変更後要約",
     ]
 ]
-st.dataframe(df, width="stretch", hide_index=True)
+st.dataframe(df, use_container_width=True, hide_index=True)
 st.caption("一覧は履歴確認向けに並び順を調整し、長文は短縮表示しています。詳細は下部の JSON で確認できます。")
 
 with st.expander("イベント別件数", expanded=False):
@@ -201,7 +201,7 @@ with st.expander("イベント別件数", expanded=False):
         .rename_axis("イベント")
         .reset_index(name="件数")
     )
-    st.dataframe(count_df, width="stretch")
+    st.dataframe(count_df, use_container_width=True)
 
 with st.expander("先頭20件の詳細JSON", expanded=False):
     for idx, row in enumerate(rows[:20], start=1):

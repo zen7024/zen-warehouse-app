@@ -440,7 +440,7 @@ selection_event = None
 try:
     selection_event = st.dataframe(
         df[display_cols],
-        width="stretch",
+        use_container_width=True,
         hide_index=True,
         column_config={
             "必要数": st.column_config.NumberColumn(format="%.2f"),
@@ -455,7 +455,7 @@ try:
         selection_mode="single-row",
     )
 except TypeError:
-    st.dataframe(df[display_cols], width="stretch")
+    st.dataframe(df[display_cols], use_container_width=True)
 
 selected_row = _get_selected_row(selection_event, filtered_rows)
 
@@ -540,7 +540,7 @@ if selected_row is not None:
                     "メモ",
                 ]
             ],
-            width="stretch",
+            use_container_width=True,
             hide_index=True,
             column_config={
                 "更新日時": st.column_config.TextColumn(width="medium"),

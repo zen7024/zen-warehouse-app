@@ -97,6 +97,6 @@ rows = get_recent_transactions(limit=20)
 
 if rows:
     table_data = [dict(row) for row in rows]
-    st.dataframe(table_data, width="stretch")
+    st.dataframe(table_data, use_container_width=True)
 else:
     st.info("まだ在庫イベントはありません")

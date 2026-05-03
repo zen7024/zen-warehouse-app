@@ -83,7 +83,7 @@ display_cols = [
     "更新日時",
 ]
 display_cols = [col for col in display_cols if col in df.columns]
-st.dataframe(df[display_cols].style.apply(highlight_flags, axis=1), width="stretch")
+st.dataframe(df[display_cols].style.apply(highlight_flags, axis=1), use_container_width=True)
 
 log_audit_event(
     event_type="VIEW_CURRENT_STOCK",
