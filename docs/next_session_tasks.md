@@ -1,381 +1,143 @@
-# 次セッション引継ぎ: SLH-009 / SLH-010 テスト完了
+# 次セッション引継ぎ: Phase 2 着手前タスク
 
 ## 状況サマリ
 
 - **ブランチ**: `feat/inventory-transactions-foundation`
-- **最新コミット**: `b0552ab`（エッジケースB確認コミット）
-- **回帰テスト**: `docs/state_list_hub_regression_test_cases.md` の Section 12 に経緯あり
+- **最新コミット**: `e30bdee`（SLH-009 / SLH-010 回帰テスト記録 Section 14 追記）
+- **Phase 1 基盤**: 2026-05-17 正式完了
 
-### 完了済み
+### Phase 1 完了済みテスト一覧
 
-| テストID | 状態 | 判定 |
+| テストID | 内容 | 判定 |
 |---|---|---|
-| SLH-001〜SLH-008 | 全 Pass | 2026-04-26 / 2026-05-03 確認済み |
-| RT-001〜RT-003 | 全 Pass | 2026-04-26 確認済み |
-| エッジケースB | Pass | 2026-05-03 確認済み（コード設計 + 実ブラウザ） |
+| SLH-001〜SLH-010 | 状態一覧ハブ 全10状態パターン | ✅ Pass |
+| RT-001〜RT-003 | 戻り導線・回帰テスト | ✅ Pass |
+| エッジケースB | 境界値 | ✅ Pass |
+| A-06 | 引当ロケ現物不足 → HOLD → 再引当 → SHIPPED | ✅ Pass |
+| A-09 | 出荷確定前引当解除 → 残出荷 → SHIPPED | ✅ Pass |
+| A-09派生 | 一部出荷済みありで未出荷分のみ解除 | ✅ Pass |
+| A-10 | 同商品複数出荷要求の競合・二重引当防止 | ✅ Pass |
+| A-15 | 入荷遅延と出荷優先の同時発生 | ✅ Pass |
 
-### 残タスク（このドキュメントの対象）
+### Notion 更新済み（2026-05-17）
 
-| テストID | 状態 | 理由 |
-|---|---|---|
-| SLH-009 | 保留 | ローカルDB に SENT_BACK 状態の明細が存在しない |
-| SLH-010 | 保留 | ローカルDB に CANCELLED 状態の明細が存在しない |
+- 📦 在庫管理アプリ 概要書：Phase 1 完了・フェーズ完了ログ追記
+- 🧪 テスト結果ログ：SLH-009/010 Pass・A系 Pass 更新
+- ⚡ zenOS Light Context：要更新（下記 Step 0 参照）
 
 ---
 
-## Step 1: Streamlit を起動する
+## Phase 2 着手前タスク
 
-```bash
-/Library/Frameworks/Python.framework/Versions/3.12/bin/streamlit run Home.py
+### Step 0: zenOS Light Context を更新する
+
+Notion の zenOS Light Context（Page ID: 3408cd0af1c881a1ac15d89f9ac95f42）を開き、
+以下の内容に更新する。
+
+**最優先タスク（修正）:**
+```
+- 副業起動 — Coconala / CrowdWorks 本格始動
+- ITパスポート — フェーズ2（分野別インプット＋過去問道場）継続中・目標受験6月
+- zen-warehouse-app Phase 2 設計着手 — Phase 1 完了済み・docs/phase2_multi_user_design.md 作成から
 ```
 
-DB パス: `data/warehouse.db`  
-起動確認後、ブラウザで http://localhost:8501 を開く。
+**状態メモ（修正）:**
+```
+KDP保留中（創作大賞結果待ち）。copipe-tool稼働中（Render + PostgreSQL）。
+哲学エッセイ第57〜59章note公開済み。
+zen-warehouse-app Phase 1 全テスト完了（2026-05-17）。Phase 2 設計着手待ち。
+```
 
 ---
 
-## Step 2: SLH-009 / SLH-010 テストデータを作成する
+### Step 1: GitHub push 確認
 
-以下のスクリプトをプロジェクトルートで実行して、テストデータを直接 DB に INSERT する。
+最新コミット `e30bdee` が remote に push 済みか確認する。
 
 ```bash
 cd /Users/zen/Projects/zen-warehouse-app
-/Library/Frameworks/Python.framework/Versions/3.12/bin/python3 - <<'EOF'
-import sys
-sys.path.insert(0, ".")
-from core.db import init_db, insert_transaction, create_order_with_lines, save_line_state, log_audit_event, get_connection
-from datetime import datetime
-
-init_db()
-
-def get_latest_line_id(order_id):
-    with get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT line_id FROM order_lines WHERE order_id = ? ORDER BY line_id DESC LIMIT 1",
-            (order_id,),
-        )
-        row = cur.fetchone()
-        return row["line_id"] if row else None
-
-now = datetime.now().isoformat(timespec="seconds")
-
-# ── SLH-009: SENT_BACK（差戻し） ──────────────────────────────────────
-print("=== SLH-009: SENT_BACK テストデータ作成 ===")
-
-insert_transaction(
-    tx_type="receipt",
-    item_code="SLH009-ITEM-001",
-    location_code="SLH009-A01",
-    qty=5,
-    lot_no="LOT-SLH009",
-    reason="SLH-009テスト入庫",
-    operator="zen",
-    tx_time=now,
-)
-log_audit_event(
-    event_type="RECEIPT",
-    user_id="zen",
-    item_code="SLH009-ITEM-001",
-    location_code="SLH009-A01",
-    after_value={"qty": 5.0, "reason": "SLH-009テスト入庫", "tx_time": now},
-    free_note="SLH-009テスト入庫",
-)
-
-order_id_009, _ = create_order_with_lines(
-    reference="SO-SLH009-001",
-    note="SLH-009差戻し状態テスト用",
-    line_items=[("SLH009-ITEM-001", 5)],
-)
-line_id_009 = get_latest_line_id(order_id_009)
-print(f"  order_id={order_id_009}, line_id={line_id_009}")
-
-# ALLOCATED → SENT_BACK の履歴を作る
-ok, msg = save_line_state(
-    line_id_009,
-    "ALLOCATED",
-    state_reason=None,
-    changed_by="zen",
-    free_note="SLH-009テスト: 初期引当済",
-)
-print(f"  ALLOCATED: {ok} / {msg}")
-
-ok, msg = save_line_state(
-    line_id_009,
-    "SENT_BACK",
-    state_reason="品質確認差戻し",
-    changed_by="zen",
-    free_note="SLH-009テスト: 差戻し状態",
-)
-print(f"  SENT_BACK: {ok} / {msg}")
-
-log_audit_event(
-    event_type="STATE_CHANGE",
-    user_id="zen",
-    item_code="SLH009-ITEM-001",
-    order_id=order_id_009,
-    line_id=line_id_009,
-    before_value={"state_code": "ALLOCATED"},
-    after_value={"state_code": "SENT_BACK", "state_reason": "品質確認差戻し"},
-    reason_code="NORMAL_SHIPMENT",
-    free_note="SLH-009テスト: 差戻し処理",
-)
-
-print(f"  → SLH-009 完了: 指示ID={order_id_009} / 明細ID={line_id_009}")
-
-# ── SLH-010: CANCELLED（キャンセル） ─────────────────────────────────
-print("=== SLH-010: CANCELLED テストデータ作成 ===")
-
-insert_transaction(
-    tx_type="receipt",
-    item_code="SLH010-ITEM-001",
-    location_code="SLH010-A01",
-    qty=5,
-    lot_no="LOT-SLH010",
-    reason="SLH-010テスト入庫",
-    operator="zen",
-    tx_time=now,
-)
-log_audit_event(
-    event_type="RECEIPT",
-    user_id="zen",
-    item_code="SLH010-ITEM-001",
-    location_code="SLH010-A01",
-    after_value={"qty": 5.0, "reason": "SLH-010テスト入庫", "tx_time": now},
-    free_note="SLH-010テスト入庫",
-)
-
-order_id_010, _ = create_order_with_lines(
-    reference="SO-SLH010-001",
-    note="SLH-010キャンセル状態テスト用",
-    line_items=[("SLH010-ITEM-001", 5)],
-)
-line_id_010 = get_latest_line_id(order_id_010)
-print(f"  order_id={order_id_010}, line_id={line_id_010}")
-
-# ALLOCATED → CANCELLED の履歴を作る
-ok, msg = save_line_state(
-    line_id_010,
-    "ALLOCATED",
-    state_reason=None,
-    changed_by="zen",
-    free_note="SLH-010テスト: 初期引当済",
-)
-print(f"  ALLOCATED: {ok} / {msg}")
-
-ok, msg = save_line_state(
-    line_id_010,
-    "CANCELLED",
-    state_reason="客先都合キャンセル",
-    changed_by="zen",
-    free_note="SLH-010テスト: キャンセル状態",
-)
-print(f"  CANCELLED: {ok} / {msg}")
-
-log_audit_event(
-    event_type="STATE_CHANGE",
-    user_id="zen",
-    item_code="SLH010-ITEM-001",
-    order_id=order_id_010,
-    line_id=line_id_010,
-    before_value={"state_code": "ALLOCATED"},
-    after_value={"state_code": "CANCELLED", "state_reason": "客先都合キャンセル"},
-    reason_code="NORMAL_SHIPMENT",
-    free_note="SLH-010テスト: キャンセル処理",
-)
-
-print(f"  → SLH-010 完了: 指示ID={order_id_010} / 明細ID={line_id_010}")
-print("=== テストデータ作成完了 ===")
-EOF
+git status
+git log --oneline -5
+git push
 ```
 
-スクリプト出力から `order_id` と `line_id` を控えておく。
+push 済みなら次へ。未 push なら push してから次へ。
 
 ---
 
-## Step 3: SLH-009 / SLH-010 を手動確認する
+### Step 2: Phase 1 完了状態の固定確認
 
-### SLH-009 / SENT_BACK / 差戻し
+以下が整合していることを確認する（差異があれば修正する）。
 
-**事前確認**:  
-状態一覧ページを開き、状態フィルタに「差戻し」が表示されることを確認する。
-
-**操作手順**:
-1. `pages/11_状態一覧.py` を開く
-2. 状態フィルタで「差戻し」を選択
-3. `SO-SLH009-001` / 商品コード `SLH009-ITEM-001` の明細を選択
-4. 以下を確認する:
-
-| 確認項目 | 期待値 |
+| 確認対象 | 内容 |
 |---|---|
-| 案内文 | `差戻しまたはキャンセル状態です。まず監査ログを確認してください。` |
-| primary ボタン | `監査ログで履歴確認` |
-| secondary ボタン | なし |
-| 出荷確定ボタン | 表示されない |
-| 引当解除ボタン | 表示されない |
-| 状態履歴 | 「引当済 → 差戻し」の流れが表示される |
+| `docs/state_list_hub_regression_test_cases.md` | Section 14 が最新記録 |
+| Notion「在庫管理アプリ 概要書」| Phase 1 ✅ 完了・フェーズ完了ログあり |
+| Notion「テスト結果ログ」 | SLH-009/010 ✅ Pass・未解決なし |
+| CLAUDE.md の検証済みシナリオ表 | A-09派生 ✅ Pass 記載あり |
 
-5. 「監査ログで履歴確認」を押して `pages/10_監査ログ.py` へ遷移
-6. 対象の指示ID / 明細ID が検索条件に引き継がれていることを確認
-
-**判定**: Pass / Fail
-
----
-
-### SLH-010 / CANCELLED / キャンセル
-
-**事前確認**:  
-状態一覧ページを開き、状態フィルタに「キャンセル」が表示されることを確認する。
-
-**操作手順**:
-1. `pages/11_状態一覧.py` を開く
-2. 状態フィルタで「キャンセル」を選択
-3. `SO-SLH010-001` / 商品コード `SLH010-ITEM-001` の明細を選択
-4. 以下を確認する:
-
-| 確認項目 | 期待値 |
-|---|---|
-| 案内文 | `差戻しまたはキャンセル状態です。まず監査ログを確認してください。` |
-| primary ボタン | `監査ログで履歴確認` |
-| secondary ボタン | なし |
-| 出荷確定ボタン | 表示されない |
-| 引当解除ボタン | 表示されない |
-| 状態履歴 | 「引当済 → キャンセル」の流れが表示される |
-
-5. 「監査ログで履歴確認」を押して `pages/10_監査ログ.py` へ遷移
-6. 対象の指示ID / 明細ID が検索条件に引き継がれていることを確認
-
-**判定**: Pass / Fail
-
----
-
-## Step 4: 結果を記録する
-
-### `docs/state_list_hub_regression_test_cases.md` に Section 13 を追加する
-
-以下のテンプレートを使って Section 13 として末尾に追記する。
-
-```markdown
----
-
-## 13. 実施記録: YYYY-MM-DD SLH-009 / SLH-010 確認
-
-- 実施日: YYYY-MM-DD
-- 実施者: zen
-- 実施ブランチ: feat/inventory-transactions-foundation
-- 実施環境: ローカル Streamlit / SQLite（Python 3.12 / Streamlit 1.x）
-- 対象コミット: （git log -1 --format="%h" で確認）
-
-### SLH-009 / SENT_BACK / 差戻し
-
-作成データ:
-- 商品コード: SLH009-ITEM-001
-- ロケーション: SLH009-A01
-- 入庫数: 5
-- 出荷指示番号: SO-SLH009-001
-- 出荷指示数量: 5
-- 状態理由: 品質確認差戻し
-
-対象:
-- 指示ID: （スクリプト出力を記録）
-- 明細ID: （スクリプト出力を記録）
-
-確認結果:
-- 差戻しフィルタで対象明細を表示できた: 
-- 案内文 OK / NG: 
-- primary ボタン OK / NG: 
-- secondary ボタンなし OK / NG: 
-- 出荷確定・引当解除ボタン非表示 OK / NG: 
-- 状態履歴に「引当済→差戻し」表示 OK / NG: 
-- 監査ログ遷移・引き継ぎ OK / NG: 
-
-判定:
-Pass / Fail
-
----
-
-### SLH-010 / CANCELLED / キャンセル
-
-作成データ:
-- 商品コード: SLH010-ITEM-001
-- ロケーション: SLH010-A01
-- 入庫数: 5
-- 出荷指示番号: SO-SLH010-001
-- 出荷指示数量: 5
-- 状態理由: 客先都合キャンセル
-
-対象:
-- 指示ID: （スクリプト出力を記録）
-- 明細ID: （スクリプト出力を記録）
-
-確認結果:
-- キャンセルフィルタで対象明細を表示できた: 
-- 案内文 OK / NG: 
-- primary ボタン OK / NG: 
-- secondary ボタンなし OK / NG: 
-- 出荷確定・引当解除ボタン非表示 OK / NG: 
-- 状態履歴に「引当済→キャンセル」表示 OK / NG: 
-- 監査ログ遷移・引き継ぎ OK / NG: 
-
-判定:
-Pass / Fail
-
----
-
-### 総合判定
-
-（SLH-009: Pass/Fail / SLH-010: Pass/Fail）
-```
-
----
-
-## Step 5: コミットする
+CLAUDE.md の確認コマンド:
 
 ```bash
-cd /Users/zen/Projects/zen-warehouse-app
-git add docs/state_list_hub_regression_test_cases.md
-git commit -m "test: add SLH-009 SENT_BACK / SLH-010 CANCELLED regression test results"
+grep -A 10 "検証済みシナリオ" /Users/zen/Projects/zen-warehouse-app/CLAUDE.md
 ```
-
-全ケース Pass なら、`docs/state_list_hub_regression_test_cases.md` のセクション4の表の SLH-009 / SLH-010 列に `Pass` を記入してから commit すること。
 
 ---
 
-## 補足: トラブルシューティング
+### Step 3: Phase 2 の入口整理
 
-### 「差戻し / キャンセル」が状態フィルタに表示されない場合
+**Phase 2 の目標（概要書より）:**
+- 多ユーザー化
+- 認証の DB 管理化
+- ロール設計（閲覧 / 入庫担当 / 管理者）
+- SQLite → PostgreSQL / Supabase 移行準備
+- Streamlit Cloud または Railway でクラウドデプロイ
 
-状態フィルタの選択肢は `get_all_line_state_rows()` の結果に存在する `state_code` に依存する。  
-スクリプトが失敗している可能性があるため、以下で確認する。
+**着手方針（重要）:**
+いきなり DB 移行には入らない。
+最初は「ユーザー・権限・倉庫切替の設計整理」から始める。
 
-```bash
-/Library/Frameworks/Python.framework/Versions/3.12/bin/python3 - <<'EOF'
-import sys; sys.path.insert(0, ".")
-from core.db import init_db, get_connection
-init_db()
-with get_connection() as conn:
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT s.line_id, s.state_code, s.state_reason, s.changed_at
-        FROM order_state_logs s
-        WHERE s.state_code IN ('SENT_BACK', 'CANCELLED')
-        ORDER BY s.id DESC LIMIT 10
-    """)
-    for r in cur.fetchall():
-        print(dict(r))
-EOF
-```
+---
 
-### save_line_state が「変更なしです」を返す場合
+### Step 4: Phase 2 最初の実装候補（優先順）
 
-最新ログと同じ `(state_code, state_reason, hold_flag, approval_status)` の組み合わせは重複とみなされてスキップされる。  
-理由コードや free_note を変えるか、スクリプトを最初から再実行すること（同じ入庫・発注は重複するが状態ログは別 line_id で作られる）。
+1. `user / role / warehouse` の最小マスタ設計
+2. 現在のハードコード認証（`streamlit-authenticator`）の棚卸し
+3. 画面ごとの権限整理
+4. PostgreSQL 移行前の DB 差分整理
+5. QRスキャナー修正と商品登録画面の扱いを決める
+
+---
+
+### Step 5: 次回開始時の推奨作業（最初にやること）
+
+**コード実装より先に、設計ドキュメントを作る。**
+
+作成対象ファイル: `docs/phase2_multi_user_design.md`
+
+記載内容:
+- Phase 2 の目的
+- ユーザー種別
+- ロール一覧
+- 倉庫切替の扱い
+- 画面別の権限表
+- SQLite 試作でできる範囲
+- PostgreSQL 移行後にやる範囲
+
+---
+
+## 注意事項
+
+- Phase 1 の完了状態を壊さない
+- 既存の状態一覧ハブ・監査ログ・引当・出荷・解除の動作には触らない
+- まず設計ドキュメント作成を優先し、コードは後から
 
 ---
 
 ## 参照ドキュメント
 
 - `docs/state_list_hub_regression_test_cases.md` — 全テストケース定義と実施記録
-- `core/db.py:save_line_state()` (L.1723〜) — 状態保存関数
-- `core/db.py:infer_line_state()` (L.1517〜) — 状態推論（order_state_logs の最新 state_code が優先）
-- `pages/11_状態一覧.py:_build_line_state_rows()` (via db.py L.1585〜) — 状態表示ロジック
+- `design.md` — 設計判断・状態遷移の根拠ドキュメント
+- `CLAUDE.md` — プロジェクト概要・アーキテクチャ原則
+- Notion「在庫管理アプリ 概要書」— フェーズロードマップ
+- Notion「テスト結果ログ」— 全テスト結果集約
