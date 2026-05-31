@@ -2103,6 +2103,40 @@ def get_shortage_candidates_for_order(order_id, line_ship_qty_map):
     return shortages
 
 
+def get_all_items() -> list[dict]:
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT item_code, item_name, unit, is_active FROM items ORDER BY item_code"
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def register_item(item_code: str, item_name: str, unit: str, is_active: int = 1) -> str | None:
+    """商品を登録する。重複時は None を返す。成功時は item_code を返す。"""
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM items WHERE item_code = ?", (item_code,))
+        if cur.fetchone():
+            return None
+        cur.execute(
+            "INSERT INTO items (item_code, item_name, unit, is_active) VALUES (?, ?, ?, ?)",
+            (item_code, item_name, unit, is_active),
+        )
+        conn.commit()
+    return item_code
+
+
+def update_item_status(item_code: str, is_active: int) -> None:
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE items SET is_active = ? WHERE item_code = ?",
+            (is_active, item_code),
+        )
+        conn.commit()
+
+
 def get_release_blockers(
     line_id,
     reason_code=None,
