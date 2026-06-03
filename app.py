@@ -81,12 +81,11 @@ st.caption("状態サマリは全出荷明細の最新状態に対する集計�
 
 # ログアウトボタン
 st.sidebar.write(f"👤 {name}")
-if st.sidebar.button("ログアウト"):
-    authenticator.logout(
-        location="sidebar",
-        button_name="ログアウトしました"
-    )
-    st.experimental_rerun()
+authenticator.logout(
+    button_name="ログアウト",
+    location="sidebar",
+    key="sidebar_logout",
+)
 
 # ファイルアップロード
 uploaded = st.file_uploader(
