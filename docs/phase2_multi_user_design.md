@@ -322,4 +322,43 @@ Phase 2 実装の最初のスプリントで着手する候補。
 
 ---
 
+## 15. 2026-06-03 試作差分確認メモ
+
+### 現在の試作で確認できたこと
+
+- `core/db.py` には `users` / `roles` / `warehouses` / `user_roles` / `user_warehouses` の最小テーブル案が実装済み
+- `app.py` では `current_user` / `current_role` / `current_warehouse` の `session_state` 保持とサイドバー表示が追加済み
+- `pages/2_現在庫.py` と `pages/7_引当可能在庫.py` では、ログインユーザーに紐づく倉庫候補を選択できるUIが追加済み
+
+### いま止めるべき点
+
+- 倉庫選択UIは追加されたが、在庫集計関数側ではまだ `warehouse_code` による実データ絞り込みをしていない
+- そのため現状は「倉庫を切り替えたように見えるが、集計結果は全件集計のまま」という試作段階
+- この状態で引当管理・出荷確定・状態一覧ハブへ横展開すると、既存機能を壊さずに説明できる境界が曖昧になるため、本格実装は一旦止める
+
+### 認証責務の整理
+
+| 項目 | SQLite 試作での担当 | PostgreSQL / Supabase 移行後の担当候補 |
+|---|---|---|
+| ログイン認証 | `streamlit-authenticator` | Supabase Auth または正式認証基盤 |
+| ユーザー識別 | `streamlit-authenticator` の `username` を起点に `users` を参照 | Auth UID と `users` の正式連携 |
+| 表示名 | `users.display_name` | `users.display_name` |
+| ロール判定 | `user_roles` / `roles` | 同左 |
+| 倉庫所属判定 | `user_warehouses` / `warehouses` | 同左 |
+| 画面権限制御 | Streamlit 画面側で制御 | 画面側 + DB / API 側の正式制御 |
+
+### 次の安全な実装単位
+
+1. 倉庫切替UIを増やす前に、読み取り系関数へ `warehouse_code` 引数を渡せる形を先に決める
+2. `inventory_transactions` / `locations` / `allocation_details` のどこを倉庫の正本にするかを決める
+3. 読み取り系2画面だけで倉庫フィルタを実データ反映し、回帰確認後に他画面へ展開する
+
+### 2026-06-03 読み取り系の暫定実装メモ
+
+- `現在庫` / `引当可能在庫` の取得関数は `warehouse_code=None` を受け取り、`None` のときは従来どおり全件集計とする
+- SQLite 試作では `location` に `warehouse_code` を正式保持していないため、既存ロケーションは当面 `WH-001` 扱いで読む
+- `WH-002` など追加倉庫は読み取りUIで選択できるが、正式なロケーション紐づけ前は在庫 0 件として表示される
+
+---
+
 *このドキュメントは Phase 2 着手前の設計メモです。実装が進むにつれて更新してください。*

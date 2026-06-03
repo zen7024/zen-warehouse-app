@@ -1,11 +1,13 @@
 import streamlit as st
 import pandas as pd
 from core.db import (
+    DEFAULT_WAREHOUSE_CODE,
     init_db,
     get_allocatable_stock_by_item_enhanced,
     get_allocatable_stock_by_item,
     get_order_competition_by_item,
     build_alloc_status,
+    get_user_warehouses,
     log_audit_event,
 )
 
@@ -37,12 +39,28 @@ st.write(
     "物理在庫から既存の未出荷引当を差し引き、さらに保留在庫・使用中案件数の見え方を足します。"
 )
 
-viewer_name = st.text_input("閲覧者", value="zen")
-warehouse_code = st.selectbox("倉庫", ["WH-001"], index=0)
+username = st.session_state.get("current_user") or st.session_state.get("username")
+viewer_name = st.text_input("閲覧者", value=username or "zen")
+warehouse_rows = get_user_warehouses(username) if username else []
+warehouse_codes = [row["warehouse_code"] for row in warehouse_rows] or [DEFAULT_WAREHOUSE_CODE]
+if st.session_state.get("current_warehouse") not in warehouse_codes:
+    st.session_state["current_warehouse"] = warehouse_codes[0]
+warehouse_labels = {
+    row["warehouse_code"]: f'{row["warehouse_code"]} | {row["warehouse_name"]}'
+    for row in warehouse_rows
+}
+warehouse_code = st.selectbox(
+    "倉庫",
+    warehouse_codes,
+    index=warehouse_codes.index(st.session_state["current_warehouse"]),
+    format_func=lambda code: warehouse_labels.get(code, code),
+)
+st.session_state["current_warehouse"] = warehouse_code
+st.caption(f"表示中の倉庫: {warehouse_labels.get(warehouse_code, warehouse_code)}")
 show_hold = st.checkbox("保留在庫を含めて表示", value=True)
 show_inbound = st.checkbox("未入荷予定の参考表示を出す", value=True)
 
-rows = get_allocatable_stock_by_item_enhanced()
+rows = get_allocatable_stock_by_item_enhanced(warehouse_code=warehouse_code)
 if rows:
     df = pd.DataFrame(rows)
     if not show_hold:
@@ -88,7 +106,7 @@ else:
 st.divider()
 st.subheader("案件横断の使用中一覧")
 st.caption("引当可能在庫が 0 に近い理由や、同一商品の他案件の取り合いを確認できます。")
-candidates = get_allocatable_stock_by_item()
+candidates = get_allocatable_stock_by_item(warehouse_code=warehouse_code)
 codes = sorted({r["item_code"] for r in candidates}) if candidates else []
 if not codes:
     st.info("案件一覧を表示する商品コードがありません（物理在庫または未出荷引当のある商品が必要です）。")

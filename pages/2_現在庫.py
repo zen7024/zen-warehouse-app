@@ -1,20 +1,42 @@
 import streamlit as st
 import pandas as pd
-from core.db import init_db, get_current_stock_breakdown, log_audit_event
+from core.db import (
+    DEFAULT_WAREHOUSE_CODE,
+    get_current_stock_breakdown,
+    get_user_warehouses,
+    init_db,
+    log_audit_event,
+)
 
 init_db()
 
 st.title("📦 現在庫")
 st.write("在庫イベントから集計した現在庫を、P0最小共通基盤の見え方で表示します。")
 
-warehouse_code = st.selectbox("倉庫", ["WH-001"], index=0)
+username = st.session_state.get("current_user") or st.session_state.get("username")
+warehouse_rows = get_user_warehouses(username) if username else []
+warehouse_codes = [row["warehouse_code"] for row in warehouse_rows] or [DEFAULT_WAREHOUSE_CODE]
+if st.session_state.get("current_warehouse") not in warehouse_codes:
+    st.session_state["current_warehouse"] = warehouse_codes[0]
+warehouse_labels = {
+    row["warehouse_code"]: f'{row["warehouse_code"]} | {row["warehouse_name"]}'
+    for row in warehouse_rows
+}
+warehouse_code = st.selectbox(
+    "倉庫",
+    warehouse_codes,
+    index=warehouse_codes.index(st.session_state["current_warehouse"]),
+    format_func=lambda code: warehouse_labels.get(code, code),
+)
+st.session_state["current_warehouse"] = warehouse_code
+st.caption(f"表示中の倉庫: {warehouse_labels.get(warehouse_code, warehouse_code)}")
 show_exception_only = st.checkbox("例外ありのみ表示")
 show_diff_only = st.checkbox("差異中のみ表示")
 item_filter = st.text_input("商品コードフィルタ（部分一致）", value="")
 location_filter = st.text_input("ロケーションフィルタ（部分一致）", value="")
-viewer_name = st.text_input("閲覧者", value="zen")
+viewer_name = st.text_input("閲覧者", value=username or "zen")
 
-rows = get_current_stock_breakdown()
+rows = get_current_stock_breakdown(warehouse_code=warehouse_code)
 
 df = pd.DataFrame(rows)
 if df.empty:

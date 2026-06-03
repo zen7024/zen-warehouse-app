@@ -11,6 +11,42 @@ DB_PATH = BASE_DIR / "data" / "warehouse.db"
 SHIP_ISSUE_LOCATION = "__SHIP__"
 DEFAULT_WAREHOUSE_CODE = "WH-001"
 
+ROLE_PRIORITY = {
+    "VIEWER": 10,
+    "WORKER": 20,
+    "LEADER": 30,
+    "MANAGER": 40,
+    "ADMIN": 50,
+}
+
+ROLE_DEFINITIONS = [
+    ("VIEWER", "閲覧専用", "在庫参照のみ"),
+    ("WORKER", "現場作業者", "入出庫・移動・棚卸差異入力"),
+    ("LEADER", "リーダー", "引当・出荷確定・引当解除を担当"),
+    ("MANAGER", "管理者", "全体管理と監査確認を担当"),
+    ("ADMIN", "システム管理者", "ユーザー・権限・倉庫管理を担当"),
+]
+
+WAREHOUSE_DEFINITIONS = [
+    (DEFAULT_WAREHOUSE_CODE, "第一倉庫", "NORMAL", 1),
+    ("WH-002", "第二倉庫", "NORMAL", 1),
+]
+
+USER_DEFINITIONS = [
+    ("U-ADMIN-001", "zen", "Zen", "managed_by_streamlit_authenticator", 1),
+    ("U-WORKER-001", "testuser", "テストユーザー", "managed_by_streamlit_authenticator", 1),
+]
+
+USER_ROLE_DEFINITIONS = [
+    ("U-ADMIN-001", "ADMIN"),
+    ("U-WORKER-001", "WORKER"),
+]
+
+USER_WAREHOUSE_DEFINITIONS = [
+    ("U-ADMIN-001", DEFAULT_WAREHOUSE_CODE),
+    ("U-WORKER-001", DEFAULT_WAREHOUSE_CODE),
+]
+
 STATE_LABELS = {
     "UNALLOCATED": "未引当",
     "PARTIAL_ALLOCATED": "一部引当",
@@ -103,6 +139,54 @@ def get_connection():
 def init_db():
     with get_connection() as conn:
         cur = conn.cursor()
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id TEXT PRIMARY KEY,
+            username TEXT NOT NULL UNIQUE,
+            display_name TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS roles (
+            role_code TEXT PRIMARY KEY,
+            role_name TEXT NOT NULL,
+            description TEXT
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS warehouses (
+            warehouse_code TEXT PRIMARY KEY,
+            warehouse_name TEXT NOT NULL,
+            warehouse_type TEXT NOT NULL DEFAULT 'NORMAL',
+            is_active INTEGER NOT NULL DEFAULT 1
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_roles (
+            user_id TEXT NOT NULL,
+            role_code TEXT NOT NULL,
+            PRIMARY KEY (user_id, role_code),
+            FOREIGN KEY (user_id) REFERENCES users(user_id),
+            FOREIGN KEY (role_code) REFERENCES roles(role_code)
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_warehouses (
+            user_id TEXT NOT NULL,
+            warehouse_code TEXT NOT NULL,
+            PRIMARY KEY (user_id, warehouse_code),
+            FOREIGN KEY (user_id) REFERENCES users(user_id),
+            FOREIGN KEY (warehouse_code) REFERENCES warehouses(warehouse_code)
+        )
+        """)
 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS items (
@@ -236,20 +320,224 @@ def init_db():
         )
         """)
 
+        cur.executemany(
+            """
+            INSERT OR IGNORE INTO roles (
+                role_code,
+                role_name,
+                description
+            ) VALUES (?, ?, ?)
+            """,
+            ROLE_DEFINITIONS,
+        )
+
+        cur.executemany(
+            """
+            INSERT OR IGNORE INTO warehouses (
+                warehouse_code,
+                warehouse_name,
+                warehouse_type,
+                is_active
+            ) VALUES (?, ?, ?, ?)
+            """,
+            WAREHOUSE_DEFINITIONS,
+        )
+
+        cur.executemany(
+            """
+            INSERT OR IGNORE INTO users (
+                user_id,
+                username,
+                display_name,
+                password_hash,
+                is_active
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            USER_DEFINITIONS,
+        )
+
+        cur.executemany(
+            """
+            INSERT OR IGNORE INTO user_roles (
+                user_id,
+                role_code
+            ) VALUES (?, ?)
+            """,
+            USER_ROLE_DEFINITIONS,
+        )
+
+        cur.executemany(
+            """
+            INSERT OR IGNORE INTO user_warehouses (
+                user_id,
+                warehouse_code
+            ) VALUES (?, ?)
+            """,
+            USER_WAREHOUSE_DEFINITIONS,
+        )
+
         conn.commit()
 
 
-def _physical_stock_by_item():
+def get_role_priority(role_code):
+    return ROLE_PRIORITY.get(role_code or "", 0)
+
+
+def get_all_warehouses(active_only=True):
+    sql = """
+        SELECT warehouse_code, warehouse_name, warehouse_type, is_active
+        FROM warehouses
+    """
+    params = []
+    if active_only:
+        sql += " WHERE is_active = 1"
+    sql += " ORDER BY warehouse_code"
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        return [dict(row) for row in cur.fetchall()]
+
+
+def _normalize_warehouse_code(warehouse_code: str | None) -> str | None:
+    code = (warehouse_code or "").strip()
+    return code or None
+
+
+def _resolve_location_warehouse_code(location_code, known_codes=None):
+    location = (location_code or "").strip()
+    codes = known_codes or [row["warehouse_code"] for row in get_all_warehouses(active_only=False)]
+
+    normalized_location = location.upper()
+    for code in codes:
+        upper_code = code.upper()
+        if (
+            normalized_location == upper_code
+            or normalized_location.startswith(f"{upper_code}:")
+            or normalized_location.startswith(f"{upper_code}/")
+            or normalized_location.startswith(f"{upper_code}|")
+        ):
+            return code
+
+    # SQLite 試作では location に warehouse_code をまだ正式保持していないため、
+    # 既存ロケーションは既定倉庫に属するものとして扱う。
+    return DEFAULT_WAREHOUSE_CODE
+
+
+def _is_location_in_warehouse(location_code, warehouse_code: str | None, known_codes=None) -> bool:
+    selected_code = _normalize_warehouse_code(warehouse_code)
+    if selected_code is None:
+        return True
+    return _resolve_location_warehouse_code(location_code, known_codes=known_codes) == selected_code
+
+
+def get_user_by_username(username):
+    if not username:
+        return None
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT user_id, username, display_name, is_active, created_at
+            FROM users
+            WHERE username = ?
+            """,
+            (username,),
+        )
+        return _row_to_dict(cur.fetchone())
+
+
+def get_user_roles(username):
+    if not username:
+        return []
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                r.role_code,
+                r.role_name,
+                r.description
+            FROM users u
+            JOIN user_roles ur ON ur.user_id = u.user_id
+            JOIN roles r ON r.role_code = ur.role_code
+            WHERE u.username = ? AND u.is_active = 1
+            ORDER BY r.role_code
+            """,
+            (username,),
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+    rows.sort(key=lambda row: get_role_priority(row["role_code"]), reverse=True)
+    return rows
+
+
+def get_user_warehouses(username, include_all_for_admin=True):
+    if not username:
+        return []
+
+    roles = get_user_roles(username)
+    role_codes = {row["role_code"] for row in roles}
+    if include_all_for_admin and "ADMIN" in role_codes:
+        return get_all_warehouses(active_only=True)
+
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                w.warehouse_code,
+                w.warehouse_name,
+                w.warehouse_type,
+                w.is_active
+            FROM users u
+            JOIN user_warehouses uw ON uw.user_id = u.user_id
+            JOIN warehouses w ON w.warehouse_code = uw.warehouse_code
+            WHERE u.username = ? AND u.is_active = 1 AND w.is_active = 1
+            ORDER BY w.warehouse_code
+            """,
+            (username,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
+def get_user_context(username):
+    user = get_user_by_username(username)
+    if not user:
+        return None
+
+    roles = get_user_roles(username)
+    warehouses = get_user_warehouses(username)
+    primary_role = roles[0] if roles else None
+    default_warehouse = warehouses[0] if warehouses else None
+
+    return {
+        **user,
+        "roles": roles,
+        "role_codes": [row["role_code"] for row in roles],
+        "role_names": [row["role_name"] for row in roles],
+        "primary_role_code": primary_role["role_code"] if primary_role else None,
+        "primary_role_name": primary_role["role_name"] if primary_role else None,
+        "warehouses": warehouses,
+        "warehouse_codes": [row["warehouse_code"] for row in warehouses],
+        "default_warehouse_code": (
+            default_warehouse["warehouse_code"] if default_warehouse else DEFAULT_WAREHOUSE_CODE
+        ),
+        "default_warehouse_name": (
+            default_warehouse["warehouse_name"] if default_warehouse else "未設定"
+        ),
+    }
+
+
+def _physical_stock_by_item(warehouse_code: str | None = None):
     totals = defaultdict(float)
-    for row in get_current_stock():
+    for row in get_current_stock(warehouse_code=warehouse_code):
         d = dict(row)
         totals[d["item_code"]] += float(d["stock_qty"])
     return dict(totals)
 
 
-def get_physical_stock_by_item():
+def get_physical_stock_by_item(warehouse_code: str | None = None):
     """ロケーション横断の現物在庫合計（商品コードごと）。"""
-    return _physical_stock_by_item()
+    return _physical_stock_by_item(warehouse_code=warehouse_code)
 
 
 def get_allocation_strategy():
@@ -257,28 +545,49 @@ def get_allocation_strategy():
     return "priority"
 
 
-def get_allocated_qty_by_item():
+def get_allocated_qty_by_item(warehouse_code: str | None = None):
     """order_lines の未出荷引当合計（qty_allocated - shipped_qty）を商品コード別に集計。"""
+    selected_code = _normalize_warehouse_code(warehouse_code)
+    if selected_code is None:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+            SELECT item_code, COALESCE(SUM(qty_allocated - shipped_qty), 0) AS qty_allocated
+            FROM order_lines
+            GROUP BY item_code
+            ORDER BY item_code
+            """)
+            return {row["item_code"]: float(row["qty_allocated"]) for row in cur.fetchall()}
+
+    known_codes = [row["warehouse_code"] for row in get_all_warehouses(active_only=False)]
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("""
-        SELECT item_code, COALESCE(SUM(qty_allocated - shipped_qty), 0) AS qty_allocated
-        FROM order_lines
-        GROUP BY item_code
-        ORDER BY item_code
+        SELECT
+            ol.item_code,
+            ad.location_code,
+            COALESCE(SUM(ad.allocated_qty - ad.shipped_qty), 0) AS qty_allocated
+        FROM allocation_details ad
+        JOIN order_lines ol ON ol.line_id = ad.line_id
+        GROUP BY ol.item_code, ad.location_code
+        ORDER BY ol.item_code, ad.location_code
         """)
-        return {row["item_code"]: float(row["qty_allocated"]) for row in cur.fetchall()}
+        totals = defaultdict(float)
+        for row in cur.fetchall():
+            if _is_location_in_warehouse(row["location_code"], selected_code, known_codes=known_codes):
+                totals[row["item_code"]] += float(row["qty_allocated"])
+        return dict(totals)
 
 
-def get_allocatable_stock_by_item():
+def get_allocatable_stock_by_item(warehouse_code: str | None = None):
     """
     商品別に物理在庫・引当済・引当可能在庫を返す（リストの dict）。
 
     - 引当可能在庫 = max(物理在庫 - 引当済, 0)
     - 物理在庫または引当に現れる商品コードをすべて含む（将来の優先度・バックオーダー拡張の土台）
     """
-    physical = get_physical_stock_by_item()
-    allocated = get_allocated_qty_by_item()
+    physical = get_physical_stock_by_item(warehouse_code=warehouse_code)
+    allocated = get_allocated_qty_by_item(warehouse_code=warehouse_code)
     codes = sorted(set(physical) | set(allocated))
     rows = []
     for item_code in codes:
@@ -445,10 +754,21 @@ def _build_allocatable_pool(cur, item_code, strategy="priority"):
     raise ValueError(f"Unknown allocation strategy: {strategy}")
 
 
-def get_current_stock():
+def get_current_stock(warehouse_code: str | None = None):
+    selected_code = _normalize_warehouse_code(warehouse_code)
     with get_connection() as conn:
         cur = conn.cursor()
-        return _fetch_current_stock_rows(cur)
+        rows = _fetch_current_stock_rows(cur)
+
+    if selected_code is None:
+        return rows
+
+    known_codes = [row["warehouse_code"] for row in get_all_warehouses(active_only=False)]
+    return [
+        row
+        for row in rows
+        if _is_location_in_warehouse(row["location_code"], selected_code, known_codes=known_codes)
+    ]
 
 
 def insert_transaction(
@@ -1897,8 +2217,10 @@ def save_line_state(
     return True, "状態を保存しました"
 
 
-def get_current_stock_breakdown():
-    stock_rows = [dict(r) for r in get_current_stock()]
+def get_current_stock_breakdown(warehouse_code: str | None = None):
+    selected_code = _normalize_warehouse_code(warehouse_code)
+    known_codes = [row["warehouse_code"] for row in get_all_warehouses(active_only=False)]
+    stock_rows = [dict(r) for r in get_current_stock(warehouse_code=selected_code)]
     with get_connection() as conn:
         cur = conn.cursor()
 
@@ -1942,6 +2264,10 @@ def get_current_stock_breakdown():
         allocated_qty = float(reserved_map.get((item_code, location_code), 0.0))
         latest_tx = latest_tx_map.get((item_code, location_code), {})
         tx_type = latest_tx.get("tx_type")
+        resolved_warehouse_code = _resolve_location_warehouse_code(
+            location_code,
+            known_codes=known_codes,
+        )
 
         result.append(
             {
@@ -1954,7 +2280,7 @@ def get_current_stock_breakdown():
                 "diff_flag": 1 if tx_type in ("count_plus", "count_minus") else 0,
                 "exception_flag": 1 if allocated_qty > total_qty else 0,
                 "location_type": "通常",
-                "warehouse_code": DEFAULT_WAREHOUSE_CODE,
+                "warehouse_code": resolved_warehouse_code,
                 "changed_by": latest_tx.get("operator"),
                 "changed_at": latest_tx.get("tx_time"),
             }
@@ -1962,19 +2288,45 @@ def get_current_stock_breakdown():
     return result
 
 
-def get_allocatable_stock_by_item_enhanced():
-    base_rows = get_allocatable_stock_by_item()
+def get_allocatable_stock_by_item_enhanced(warehouse_code: str | None = None):
+    selected_code = _normalize_warehouse_code(warehouse_code)
+    known_codes = [row["warehouse_code"] for row in get_all_warehouses(active_only=False)]
+    base_rows = get_allocatable_stock_by_item(warehouse_code=selected_code)
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT item_code, COUNT(DISTINCT order_id) AS inuse_order_count
-            FROM order_lines
-            WHERE qty_allocated > shipped_qty
-            GROUP BY item_code
-            """
-        )
-        inuse_map = {r["item_code"]: int(r["inuse_order_count"]) for r in cur.fetchall()}
+        if selected_code is None:
+            cur.execute(
+                """
+                SELECT item_code, COUNT(DISTINCT order_id) AS inuse_order_count
+                FROM order_lines
+                WHERE qty_allocated > shipped_qty
+                GROUP BY item_code
+                """
+            )
+            inuse_map = {r["item_code"]: int(r["inuse_order_count"]) for r in cur.fetchall()}
+        else:
+            cur.execute(
+                """
+                SELECT
+                    ol.item_code,
+                    ol.order_id,
+                    ad.location_code,
+                    COALESCE(SUM(ad.allocated_qty - ad.shipped_qty), 0) AS qty_unshipped
+                FROM allocation_details ad
+                JOIN order_lines ol ON ol.line_id = ad.line_id
+                GROUP BY ol.item_code, ol.order_id, ad.location_code
+                """
+            )
+            order_map = defaultdict(set)
+            for row in cur.fetchall():
+                if float(row["qty_unshipped"]) <= 0:
+                    continue
+                if _is_location_in_warehouse(row["location_code"], selected_code, known_codes=known_codes):
+                    order_map[row["item_code"]].add(int(row["order_id"]))
+            inuse_map = {
+                item_code: len(order_ids)
+                for item_code, order_ids in order_map.items()
+            }
 
     result = []
     for row in base_rows:
@@ -1986,7 +2338,7 @@ def get_allocatable_stock_by_item_enhanced():
                 "inuse_order_count": int(inuse_map.get(item_code, 0)),
                 "priority_reserved_qty": 0.0,
                 "inbound_planned_qty": 0.0,
-                "warehouse_code": DEFAULT_WAREHOUSE_CODE,
+                "warehouse_code": selected_code,
             }
         )
     return result
