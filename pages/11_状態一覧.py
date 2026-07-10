@@ -11,9 +11,12 @@ from core.db import (
     get_reason_label,
     get_state_label,
     init_db,
+    meets_min_role,
 )
 
 init_db()
+MIN_ROLE_FOR_ACTIONS = "LEADER"
+can_operate_actions = meets_min_role(st.session_state.get("current_role"), MIN_ROLE_FOR_ACTIONS)
 DETAIL_PAGE_PATHS = {
     "audit_log": "pages/10_監査ログ.py",
     "ship_confirm": "pages/8_出荷確定.py",
@@ -229,25 +232,26 @@ def _route_priority(row):
     return ["audit_log", "ship_confirm", "release"]
 
 
-def _available_routes(row):
+def _available_routes(row, allow_actions=True):
     routes = ["audit_log"]
-    if _can_show_ship_confirm(row):
-        routes.append("ship_confirm")
-    if _can_show_release(row):
-        routes.append("release")
+    if allow_actions:
+        if _can_show_ship_confirm(row):
+            routes.append("ship_confirm")
+        if _can_show_release(row):
+            routes.append("release")
     return routes
 
 
-def _ordered_routes(row):
+def _ordered_routes(row, allow_actions=True):
     preferred = _route_priority(row)
-    available = _available_routes(row)
+    available = _available_routes(row, allow_actions=allow_actions)
     ordered = [route for route in preferred if route in available]
     ordered.extend(route for route in available if route not in ordered)
     return ordered
 
 
-def _visible_routes(row):
-    return _ordered_routes(row)[:2]
+def _visible_routes(row, allow_actions=True):
+    return _ordered_routes(row, allow_actions=allow_actions)[:2]
 
 
 def _route_caption(row, route):
@@ -553,7 +557,14 @@ if selected_row is not None:
             },
         )
     st.info(_route_message(selected_row))
-    visible_routes = _visible_routes(selected_row)
+    visible_routes = _visible_routes(selected_row, allow_actions=can_operate_actions)
+    if not can_operate_actions and (
+        _can_show_ship_confirm(selected_row) or _can_show_release(selected_row)
+    ):
+        st.caption(
+            f"出荷確定・引当解除の操作導線は{MIN_ROLE_FOR_ACTIONS}以上の権限が必要です。"
+            "監査ログで履歴を確認してください。"
+        )
     action_cols = st.columns(max(len(visible_routes), 1))
     for idx, route in enumerate(visible_routes):
         with action_cols[idx]:

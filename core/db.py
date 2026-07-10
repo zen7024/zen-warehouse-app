@@ -383,6 +383,11 @@ def get_role_priority(role_code):
     return ROLE_PRIORITY.get(role_code or "", 0)
 
 
+def meets_min_role(role_code, min_role_code):
+    """role_code の優先度が min_role_code 以上かどうかを判定する（画面別権限の表示制御用）。"""
+    return get_role_priority(role_code) >= get_role_priority(min_role_code)
+
+
 def get_all_warehouses(active_only=True):
     sql = """
         SELECT warehouse_code, warehouse_name, warehouse_type, is_active
