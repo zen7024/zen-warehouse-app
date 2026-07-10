@@ -3,9 +3,13 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime
 import streamlit_authenticator as stauth
-import yaml
-from yaml import SafeLoader
-from core.db import init_db, get_current_stock, get_line_state_summary
+from core.db import (
+    DEFAULT_WAREHOUSE_CODE,
+    get_current_stock,
+    get_line_state_summary,
+    get_user_context,
+    init_db,
+)
 
 try:
     from streamlit_qrcode_scanner import qrcode_scanner
@@ -71,6 +75,50 @@ elif authentication_status is False:
     st.error("ユーザー名またはパスワードが正しくありません")
     st.stop()
 
+user_context = get_user_context(username)
+if user_context is None:
+    st.error("ログインユーザーの Phase 2 マスタ定義が見つかりません")
+    st.stop()
+
+st.session_state["current_user"] = user_context["username"]
+st.session_state["current_user_id"] = user_context["user_id"]
+st.session_state["current_role"] = user_context["primary_role_code"]
+st.session_state["current_role_name"] = user_context["primary_role_name"]
+
+warehouse_options = user_context["warehouses"] or [
+    {
+        "warehouse_code": DEFAULT_WAREHOUSE_CODE,
+        "warehouse_name": "第一倉庫",
+        "warehouse_type": "NORMAL",
+    }
+]
+warehouse_labels = {
+    row["warehouse_code"]: f'{row["warehouse_code"]} | {row["warehouse_name"]}'
+    for row in warehouse_options
+}
+warehouse_codes = list(warehouse_labels.keys())
+
+if st.session_state.get("current_warehouse") not in warehouse_codes:
+    st.session_state["current_warehouse"] = (
+        user_context["default_warehouse_code"] if user_context["default_warehouse_code"] in warehouse_codes
+        else warehouse_codes[0]
+    )
+
+selected_warehouse = st.sidebar.selectbox(
+    "現在の倉庫",
+    warehouse_codes,
+    index=warehouse_codes.index(st.session_state["current_warehouse"]),
+    format_func=lambda code: warehouse_labels.get(code, code),
+)
+st.session_state["current_warehouse"] = selected_warehouse
+
+current_warehouse_info = next(
+    (row for row in warehouse_options if row["warehouse_code"] == selected_warehouse),
+    warehouse_options[0],
+)
+st.session_state["current_warehouse_name"] = current_warehouse_info["warehouse_name"]
+st.session_state["current_warehouse_type"] = current_warehouse_info["warehouse_type"]
+
 state_summary = get_line_state_summary()
 summary_cols = st.columns(4)
 summary_cols[0].metric("保留件数", state_summary["hold_count"])
@@ -81,6 +129,10 @@ st.caption("状態サマリは全出荷明細の最新状態に対する集計�
 
 # ログアウトボタン
 st.sidebar.write(f"👤 {name}")
+st.sidebar.caption(f"ロール: {st.session_state['current_role_name']} ({st.session_state['current_role']})")
+st.sidebar.caption(
+    f"倉庫種別: {st.session_state['current_warehouse_name']} / {st.session_state['current_warehouse_type']}"
+)
 authenticator.logout(
     button_name="ログアウト",
     location="sidebar",
